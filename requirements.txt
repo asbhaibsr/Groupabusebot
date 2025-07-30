@@ -1,6 +1,4 @@
 Flask==2.3.3
 Werkzeug==2.3.8
-python-telegram-bot[job-queue]==20.3
+python-telegram-bot==21.2  # इसे 20.0 या नवीनतम स्थिर संस्करण पर सेट करें
 pymongo==4.7.1
-urllib3==1.26.18  # इसे जोड़ें
-six==1.16.0 
