@@ -1,0 +1,3 @@
+python-telegram-bot==13.7 # Ya latest stable version
+Flask==2.0.1 # Ya latest stable version
+pymongo==4.0.1
