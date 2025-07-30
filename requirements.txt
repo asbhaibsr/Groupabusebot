@@ -1,4 +1,4 @@
 Flask==2.3.3
 Werkzeug==2.3.8
-python-telegram-bot==21.2 # Make sure to keep your telegram bot version
+python-telegram-bot==13.7 # Make sure to keep your telegram bot version
 pymongo==4.7.1 # Make sure to keep your pymongo version
