@@ -1,4 +1,6 @@
 Flask==2.3.3
 Werkzeug==2.3.8
-python-telegram-bot==13.7 # Make sure to keep your telegram bot version
-pymongo==4.7.1 # Make sure to keep your pymongo version
+python-telegram-bot==13.7
+pymongo==4.7.1
+urllib3==1.26.18  # इसे जोड़ें
+six==1.16.0 
