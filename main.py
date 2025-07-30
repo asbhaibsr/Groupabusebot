@@ -43,8 +43,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- Telegram Bot Setup ---
-# Application को globally declare करें, लेकिन run_polling में इसे चलाएं
-application = None # इसे __main__ ब्लॉक में initialize करेंगे
+# 'application' variable को अब यहां declare नहीं करना है (जैसे application = None),
+# इसे सीधे __main__ ब्लॉक में initialize किया जाएगा।
+# यह सुनिश्चित करता है कि global declaration से पहले कोई assignment न हो।
 
 # Profanity Filter को initialize करें
 profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -55,7 +56,7 @@ def is_admin(user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
     """Logs messages to a designated Telegram channel."""
-    # Ensure application is initialized before using it
+    # 'application' को सीधे एक्सेस करें, क्योंकि यह main ब्लॉक में global स्तर पर initialize होगा।
     if application and LOG_CHANNEL_ID:
         try:
             await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
@@ -64,10 +65,7 @@ async def log_to_channel(text: str, parse_mode: str = None) -> None:
     elif not application:
         logger.warning("Application not initialized, cannot log to channel.")
 
-# --- Bot Commands Handlers (Same as previous, omitted for brevity but include all) ---
-# ... (All your existing async functions like start, stats, broadcast_command, add_abuse_word,
-#      welcome_new_member, handle_all_messages, view_case_details_forward, button_callback_handler)
-#      should be here. I'm just putting a placeholder to keep the example concise.
+# --- Bot Commands Handlers (Same as previous, included for completeness) ---
 
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
@@ -289,6 +287,7 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
             f"<b>Mool Message:</b>\n"
             f"<code>{original_abusive_content}</code>"
         )
+        # Check if application is initialized before using it
         if application:
             sent_case_message = await application.bot.send_message(
                 chat_id=CASE_CHANNEL_ID,
@@ -474,6 +473,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         except Exception as e:
             await query.edit_message_text(f"Kick karte samay error hui: {e}")
             logger.error(f"Error kicking user {user_id} in chat {chat_id}: {e}")
+
     elif data.startswith("warn_user_"):
         parts = data.split('_')
         user_id = int(parts[2])
@@ -492,6 +492,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             await query.edit_message_text(f"Warning message bhejte samay error hui: {e}")
             logger.error(f"Error warning user {user_id} in chat {chat_id}: {e}")
 
+
 # --- Flask Health Check Endpoint ---
 @app.route('/')
 def health_check():
@@ -508,8 +509,13 @@ def run_flask_app():
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # Flask app को एक अलग थ्रेड में स्टार्ट करें
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True # Main program बंद होने पर thread भी बंद हो जाएगा
+    flask_thread.start()
+
     # Telegram Bot Application को यहां initialize करें
-    global application
+    # 'global application' की आवश्यकता नहीं है, क्योंकि हम सीधे top-level scope में असाइन कर रहे हैं।
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Dispatcher को configure करें
@@ -529,20 +535,16 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
-    # Flask app को एक अलग थ्रेड में स्टार्ट करें
-    flask_thread = threading.Thread(target=run_flask_app)
-    flask_thread.daemon = True # Main program बंद होने पर thread भी बंद हो जाएगा
-    flask_thread.start()
-
     # Telegram बॉट को सीधे application.run_polling() से चलाएं
-    # asyncio.run() की आवश्यकता नहीं है, क्योंकि run_polling खुद एक इवेंट लूप को हैंडल करता है।
     logger.info("Starting Telegram Bot in long polling mode...")
     try:
         # Puraani webhook clear karein (agar koi hai)
-        current_webhook = application.bot.get_webhook_info() # Synchronous call, as we are not inside an async function yet
+        # ध्यान दें: ये अब asynchronous call नहीं हैं, लेकिन application.run_polling()
+        # अपने आप ही asyncio event loop को शुरू कर देगा और handle करेगा।
+        current_webhook = application.bot.get_webhook_info()
         if current_webhook.url:
             logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-            application.bot.delete_webhook() # Synchronous call
+            application.bot.delete_webhook()
             logger.info("Cleared any existing webhooks.")
         else:
             logger.info("No active webhook found to clear.")
