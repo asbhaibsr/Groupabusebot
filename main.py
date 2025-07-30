@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
-    Updater, CommandHandler, MessageHandler, Filters, CallbackContext, 
-    CallbackQueryHandler, ErrorHandler
+    Updater, CommandHandler, MessageHandler, filters, CallbackContext,  # 'Filters' ko 'filters' se replace kiya
+    CallbackQueryHandler, Application, TypeHandler # 'ErrorHandler' ko hata diya, aur naye imports add kiye
 )
 
 # Custom module import
@@ -518,19 +518,19 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             query.edit_message_text(f"Abuse Details forward karte samay error hui: {e}")
             print(f"Error forwarding case: {e}")
 
-
-def error_handler(update: object, context: CallbackContext) -> None:
-    """Log Errors caused by Updates."""
-    print(f'Update {update} caused error {context.error}')
+# Error Handler ab yahan se hata diya gaya hai, ise main polling loop mein manage kiya jayega.
+# def error_handler(update: object, context: CallbackContext) -> None:
+#     """Log Errors caused by Updates."""
+#     print(f'Update {update} caused error {context.error}')
 
 # --- Bot Polling Thread ---
 bot_start_time = datetime.now() # Bot ka start time record karein
 
 def run_telegram_bot():
     """Telegram bot ko run karega polling mode mein."""
-    updater = Updater(TELEGRAM_BOT_TOKEN)
-
-    dispatcher = updater.dispatcher
+    # Updater ki jagah Application.builder().build() ka upyog karein
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    dispatcher = application # Dispatcher ab Application object hi hai
 
     # Command Handlers
     dispatcher.add_handler(CommandHandler("start", start))
@@ -540,21 +540,23 @@ def run_telegram_bot():
 
     # Message Handler (text messages, not commands)
     # Naye members ke liye handler
-    dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_new_member))
+    dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member)) # 'Filters' ko 'filters' se replace kiya
     
     # Abusive messages aur broadcast message response ke liye
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # 'Filters' ko 'filters' se replace kiya
     
     # Callback Query Handler (buttons ke liye)
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
 
-    # Error Handler
-    dispatcher.add_handler(ErrorHandler(error_handler))
+    # Error handling directly Application.run_polling() mein manage hota hai.
+    # dispatcher.add_handler(ErrorHandler(error_handler)) # Is line ko hata diya
 
     # Bot ko start karein
     print("Starting Telegram Bot...")
-    updater.start_polling()
-    updater.idle()
+    application.run_polling(drop_pending_updates=True) # Updater ki jagah application.run_polling()
+    # application.run_polling() automatically keyboard interrupts (Ctrl+C) ko handle karta hai
+    # updater.idle() ki zaroorat nahi hai
+    
 
 # --- Main Execution ---
 if __name__ == '__main__':
