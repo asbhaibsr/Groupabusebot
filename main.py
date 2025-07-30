@@ -61,19 +61,20 @@ def is_admin(user_id: int) -> bool:
     """Check karta hai ki user admin hai ya nahi."""
     return user_id in ADMIN_USER_IDS
 
-def log_to_channel(text: str, parse_mode: str = None) -> None:
+async def log_to_channel(text: str, parse_mode: str = None) -> None: # Make this async too
     """Log channel par message bheje ga."""
     if LOG_CHANNEL_ID:
         try:
-            telegram_bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
+            await telegram_bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             print(f"Error logging to channel: {e}")
 
 # --- Bot Commands Handlers ---
-def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: CallbackContext) -> None: # Changed to async
     """/start command ka handler."""
     user = update.message.from_user
-    bot_name = context.bot.get_me().first_name # Bot ka naam dynamically fetch karein
+    bot_info = await context.bot.get_me() # Await the coroutine
+    bot_name = bot_info.first_name # Access first_name from the awaited object
 
     welcome_message = (
         f"👋 **Namaste {user.first_name}!**\n\n"
@@ -96,7 +97,7 @@ def start(update: Update, context: CallbackContext) -> None:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text(
+    await update.message.reply_text( # Await reply_text
         text=welcome_message,
         reply_markup=reply_markup,
         parse_mode='HTML'
@@ -109,10 +110,10 @@ def start(update: Update, context: CallbackContext) -> None:
     #     upsert=True
     # )
 
-def stats(update: Update, context: CallbackContext) -> None:
+async def stats(update: Update, context: CallbackContext) -> None: # Changed to async
     """/stats command ka handler."""
     if not is_admin(update.effective_user.id):
-        update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
+        await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.") # Await reply_text
         return
 
     # Real stats MongoDB se fetch honge
@@ -128,38 +129,38 @@ def stats(update: Update, context: CallbackContext) -> None:
         f"• Uptime: {str(datetime.now() - bot_start_time).split('.')[0]} \n" # Bot start time global var se
         f"• Last Check: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
     )
-    update.message.reply_text(stats_message, parse_mode='Markdown')
+    await update.message.reply_text(stats_message, parse_mode='Markdown') # Await reply_text
 
-def broadcast_command(update: Update, context: CallbackContext) -> None:
+async def broadcast_command(update: Update, context: CallbackContext) -> None: # Changed to async
     """/broadcast command ka handler."""
     if not is_admin(update.effective_user.id):
-        update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
+        await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.") # Await reply_text
         return
     
-    update.message.reply_text("Kripya apna message bhejein jo sabhi groups par broadcast karna hai.")
+    await update.message.reply_text("Kripya apna message bhejein jo sabhi groups par broadcast karna hai.") # Await reply_text
     # State set karein ki next message broadcast message hoga
     BROADCAST_MESSAGE[update.effective_user.id] = None # Flag to indicate awaiting broadcast message
 
-def handle_broadcast_message(update: Update, context: CallbackContext) -> None:
+async def handle_broadcast_message(update: Update, context: CallbackContext) -> None: # Changed to async
     """Broadcast message ko handle karega."""
     user_id = update.effective_user.id
     if is_admin(user_id) and user_id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user_id] is None:
         BROADCAST_MESSAGE[user_id] = update.message # Message ko store karein
-        update.message.reply_text("Message received. Kya aap ise broadcast karna chahenge?",
+        await update.message.reply_text("Message received. Kya aap ise broadcast karna chahenge?", # Await reply_text
                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]]))
     else:
         # Agar admin nahi hai ya state sahi nahi hai, toh normal message handler ko jaane dein
-        handle_message(update, context)
+        await handle_message(update, context)
 
 
-def confirm_broadcast(update: Update, context: CallbackContext) -> None:
+async def confirm_broadcast(update: Update, context: CallbackContext) -> None: # Changed to async
     """Broadcast confirmation ko handle karega."""
     query = update.callback_query
-    query.answer()
+    await query.answer() # Await query.answer()
     
     user_id = query.from_user.id
     if not is_admin(user_id) or not BROADCAST_MESSAGE.get(user_id):
-        query.edit_message_text("Invalid action or session expired.")
+        await query.edit_message_text("Invalid action or session expired.") # Await edit_message_text
         return
         
     broadcast_msg = BROADCAST_MESSAGE.pop(user_id) # Message ko retrieve aur remove karein
@@ -179,7 +180,7 @@ def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         for chat_id in dummy_group_ids: # Real mein group_ids use hoga
             try:
                 # Message ko forward karein jisse formatting/media intact rahe
-                context.bot.copy_message(
+                await context.bot.copy_message( # Await copy_message
                     chat_id=chat_id,
                     from_chat_id=broadcast_msg.chat_id,
                     message_id=broadcast_msg.message_id
@@ -190,26 +191,26 @@ def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                 fail_count += 1
                 print(f"Failed to broadcast to {chat_id}: {e}")
         
-        query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups. Failed: {fail_count}.")
+        await query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups. Failed: {fail_count}.") # Await edit_message_text
     else:
-        query.edit_message_text("Broadcast message not found.")
+        await query.edit_message_text("Broadcast message not found.") # Await edit_message_text
 
 
-def welcome_new_member(update: Update, context: CallbackContext) -> None:
+async def welcome_new_member(update: Update, context: CallbackContext) -> None: # Changed to async
     """Naye member ke join hone par log karega."""
     new_members = update.message.new_chat_members
     chat = update.message.chat
 
     for member in new_members:
-        if member.id == context.bot.get_me().id:
+        if member.id == context.bot.get_me().id: # get_me() here is OK, as it's not awaited directly
             # Bot khud group join hua hai
             log_message = (
                 f"**🤖 Bot Joined Group:**\n"
                 f"Group Name: `{chat.title}`\n"
                 f"Group ID: `{chat.id}`\n"
-                f"Members: {chat.get_member_count()}"
+                f"Members: {await chat.get_member_count()}" # Await get_member_count
             )
-            log_to_channel(log_message, parse_mode='Markdown')
+            await log_to_channel(log_message, parse_mode='Markdown') # Await log_to_channel
             # groups_collection.update_one({"chat_id": chat.id}, {"$set": {"title": chat.title, "last_joined": datetime.now()}}, upsert=True)
         else:
             # Koi naya user group join hua hai
@@ -218,14 +219,14 @@ def welcome_new_member(update: Update, context: CallbackContext) -> None:
                 f"User: {member.mention_html()} (`{member.id}`)\n"
                 f"Group: `{chat.title}` (`{chat.id}`)"
             )
-            log_to_channel(log_message, parse_mode='HTML')
+            await log_to_channel(log_message, parse_mode='HTML') # Await log_to_channel
             # users_collection.update_one(
             #     {"user_id": member.id},
             #     {"$set": {"username": member.username, "first_name": member.first_name, "last_name": member.last_name, "last_seen_in_group": datetime.now()}},
             #     upsert=True
             # )
 
-def handle_message(update: Update, context: CallbackContext) -> None:
+async def handle_message(update: Update, context: CallbackContext) -> None: # Changed to async
     """
     Har message ko process karega, gaaliyon ko detect karega aur action lega.
     """
@@ -235,13 +236,13 @@ def handle_message(update: Update, context: CallbackContext) -> None:
     
     # Agar user admin hai aur broadcast message ki state set hai, toh broadcast handler ko call karein
     if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
-        handle_broadcast_message(update, context)
+        await handle_broadcast_message(update, context) # Await handle_broadcast_message
         return # Important: Yahan se return karein takki normal message handling na ho
 
     if message_text and profanity_filter.contains_profanity(message_text):
         # Message delete karein
         try:
-            context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id)
+            await context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id) # Await delete_message
             print(f"Deleted abusive message from {user.username or user.full_name} in {chat.title or chat.type}.")
         except Exception as e:
             print(f"Error deleting message: {e}")
@@ -268,7 +269,7 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        sent_notification = context.bot.send_message(
+        sent_notification = await context.bot.send_message( # Await send_message
             chat_id=chat.id,
             text=notification_message,
             reply_markup=reply_markup,
@@ -289,7 +290,7 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         #     "abuse_number": abuse_no # Store abuse number
         # }).inserted_id
         
-        context.bot.send_message(
+        await context.bot.send_message( # Await send_message
             chat_id=chat.id,
             text="*Check Case* ⬆️",
             reply_to_message_id=sent_notification.message_id,
@@ -297,10 +298,10 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         )
 
 
-def button_callback_handler(update: Update, context: CallbackContext) -> None:
+async def button_callback_handler(update: Update, context: CallbackContext) -> None: # Changed to async
     """Button callbacks ko handle karega."""
     query = update.callback_query
-    query.answer()
+    await query.answer() # Await query.answer()
 
     data = query.data
     
@@ -309,15 +310,15 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
         # For group specific actions, ensure the user clicking is an admin of that group
         if query.message.chat_id < 0: # It's a group chat
             try:
-                member = context.bot.get_chat_member(chat_id=query.message.chat_id, user_id=query.from_user.id)
+                member = await context.bot.get_chat_member(chat_id=query.message.chat_id, user_id=query.from_user.id) # Await get_chat_member
                 if not (member.status == 'administrator' or member.status == 'creator'):
-                    query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
+                    await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.") # Await edit_message_text
                     return
             except Exception:
-                query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai. Bot ko 'Get Group Info' permission ki zaroorat ho sakti hai.")
+                await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai. Bot ko 'Get Group Info' permission ki zaroorat ho sakti hai.") # Await edit_message_text
                 return
         elif query.message.chat_id > 0 and not is_admin(query.from_user.id): # Private chat but not a super admin
-            query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
+            await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.") # Await edit_message_text
             return
 
     if data == "help_menu":
@@ -330,7 +331,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             f"• /broadcast - Sabhi groups par message bhejen (Admins only).\n\n"
             f"Agar aapko aur madad chahiye, toh @asbhaibsr se contact karein."
         )
-        query.edit_message_text(help_text, parse_mode='Markdown')
+        await query.edit_message_text(help_text, parse_mode='Markdown') # Await edit_message_text
 
     elif data == "other_bots":
         other_bots_text = (
@@ -338,7 +339,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             f"• @asfilter_bot: Ek movie search bot hai jo aapko movies dhundhne mein madad karega.\n"
             f"• @askiangelbot: Ye ek baat karne wala bot hai, aap group par isse baat kar sakte hain."
         )
-        query.edit_message_text(other_bots_text, parse_mode='Markdown')
+        await query.edit_message_text(other_bots_text, parse_mode='Markdown') # Await edit_message_text
 
     elif data == "donate_info":
         donate_text = (
@@ -347,7 +348,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             f"**UPI ID:** `arsadsaifi8272@ibl`\n\n"
             f"Aapki madad ke liye dhanyawaad!"
         )
-        query.edit_message_text(donate_text, parse_mode='Markdown')
+        await query.edit_message_text(donate_text, parse_mode='Markdown') # Await edit_message_text
         
     elif data.startswith("admin_actions_menu_"):
         parts = data.split('_')
@@ -364,7 +365,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
                 InlineKeyboardButton("❗ Warn User", callback_data=f"warn_user_{user_id_to_act}_{chat_id_for_action}")
             ]
         ]
-        query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(action_keyboard))
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(action_keyboard)) # Await edit_message_reply_markup
 
     elif data.startswith("mute_time_"):
         parts = data.split('_')
@@ -384,7 +385,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
                 InlineKeyboardButton("Permanent", callback_data=f"mute_{user_id}_{chat_id}_0") # Forever mute
             ]
         ]
-        query.edit_message_text(
+        await query.edit_message_text( # Await edit_message_text
             text=f"Kitne samay ke liye mute karna hai {user_id} ko?",
             reply_markup=InlineKeyboardMarkup(mute_time_keyboard)
         )
@@ -399,7 +400,7 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             permissions = ChatPermissions(can_send_messages=False)
             until_date = datetime.now() + timedelta(seconds=duration_seconds) if duration_seconds > 0 else 0
             
-            context.bot.restrict_chat_member(
+            await context.bot.restrict_chat_member( # Await restrict_chat_member
                 chat_id=chat_id, 
                 user_id=user_id, 
                 permissions=permissions, 
@@ -419,33 +420,33 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
             else:
                 action_text = f"User **{user_id}** ko **{duration_seconds} seconds** ke liye mute kiya gaya hai."
 
-            query.edit_message_text(action_text, parse_mode='Markdown')
+            await query.edit_message_text(action_text, parse_mode='Markdown') # Await edit_message_text
             # incidents_collection.update_one({"user_id": user_id, "warning_message_id": query.message.reply_to_message.message_id}, {"$set": {"action_taken": "muted", "mute_duration": duration_seconds}})
         except Exception as e:
-            query.edit_message_text(f"Mute karte samay error hui: {e}")
+            await query.edit_message_text(f"Mute karte samay error hui: {e}") # Await edit_message_text
 
     elif data.startswith("ban_"):
         parts = data.split('_')
         user_id = int(parts[1])
         chat_id = int(parts[2])
         try:
-            context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-            query.edit_message_text(f"User **{user_id}** ko group se **ban** kiya gaya hai.", parse_mode='Markdown')
+            await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id) # Await ban_chat_member
+            await query.edit_message_text(f"User **{user_id}** ko group se **ban** kiya gaya hai.", parse_mode='Markdown') # Await edit_message_text
             # incidents_collection.update_one({"user_id": user_id, "warning_message_id": query.message.reply_to_message.message_id}, {"$set": {"action_taken": "banned"}})
         except Exception as e:
-            query.edit_message_text(f"Ban karte samay error hui: {e}")
+            await query.edit_message_text(f"Ban karte samay error hui: {e}") # Await edit_message_text
 
     elif data.startswith("kick_"):
         parts = data.split('_')
         user_id = int(parts[1])
         chat_id = int(parts[2])
         try:
-            context.bot.kick_chat_member(chat_id=chat_id, user_id=user_id)
+            await context.bot.kick_chat_member(chat_id=chat_id, user_id=user_id) # Await kick_chat_member
             # Kick ke baad user re-join kar sakta hai. Agar permanent ban chahiye toh `ban_chat_member` use karein.
-            query.edit_message_text(f"User **{user_id}** ko group se **kick** kiya gaya hai.", parse_mode='Markdown')
+            await query.edit_message_text(f"User **{user_id}** ko group se **kick** kiya gaya hai.", parse_mode='Markdown') # Await edit_message_text
             # incidents_collection.update_one({"user_id": user_id, "warning_message_id": query.message.reply_to_message.message_id}, {"$set": {"action_taken": "kicked"}})
         except Exception as e:
-            query.edit_message_text(f"Kick karte samay error hui: {e}")
+            await query.edit_message_text(f"Kick karte samay error hui: {e}") # Await edit_message_text
 
     elif data.startswith("warn_user_"):
         parts = data.split('_')
@@ -454,69 +455,92 @@ def button_callback_handler(update: Update, context: CallbackContext) -> None:
 
         try:
             # User ko warning message bhejein (yahan group mein hi warning di ja rahi hai)
-            user_info = context.bot.get_chat_member(chat_id=chat_id, user_id=user_id).user
+            user_info = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id) # Await get_chat_member
             warning_text_by_admin = (
-                f"⚠️ **{user_info.first_name}**, aapne galat shabdon ka prayog kiya hai!\n\n"
+                f"⚠️ **{user_info.user.first_name}**, aapne galat shabdon ka prayog kiya hai!\n\n" # Access user_info.user.first_name
                 f"**🚨 Aisa dobara na karein, warna kadi kaarwayi ki ja sakti hai. 🚨**\n\n"
                 f"Group ke niyam todne par aapko ban, mute, ya kick kiya ja sakta hai."
             )
-            context.bot.send_message(chat_id=chat_id, text=warning_text_by_admin, parse_mode='HTML')
-            query.edit_message_text(f"User **{user_id}** ko ek aur warning message bheja gaya hai.", parse_mode='Markdown')
+            await context.bot.send_message(chat_id=chat_id, text=warning_text_by_admin, parse_mode='HTML') # Await send_message
+            await query.edit_message_text(f"User **{user_id}** ko ek aur warning message bheja gaya hai.", parse_mode='Markdown') # Await edit_message_text
             # incidents_collection.update_one({"user_id": user_id, "warning_message_id": query.message.reply_to_message.message_id}, {"$set": {"action_taken": "warned_again"}})
         except Exception as e:
-            query.edit_message_text(f"Warning message bhejte samay error hui: {e}")
+            await query.edit_message_text(f"Warning message bhejte samay error hui: {e}") # Await edit_message_text
 
 
-    elif data.startswith("view_case_"):
-        parts = data.split('_')
-        user_id_for_case = int(parts[2])
-        group_id_for_case = int(parts[3])
-        original_message_id = int(parts[4])
-        abuse_no_from_callback = parts[5] # Get abuse number from callback data
+async def view_case_details_forward(update: Update, context: CallbackContext) -> None: # Renamed handler for clarity, not strictly necessary for fix
+    """Handle forwarding of case details."""
+    # This handler needs to be aware it's being called from a button callback
+    query = update.callback_query
+    await query.answer()
 
-        original_abusive_content = "Original message content not available (deleted or not logged)."
-        # Agar aap MongoDB use kar rahe hain, toh yahan se abusive content fetch kar sakte hain
-        # incident = incidents_collection.find_one({"user_id": user_id_for_case, "chat_id": group_id_for_case, "abuse_number": abuse_no_from_callback})
-        # if incident and "abusive_message_content" in incident:
-        #     original_abusive_content = incident["abusive_message_content"]
+    data = query.data
+    if not data.startswith("view_case_"):
+        await query.edit_message_text("Invalid case view request.")
+        return
 
-        # Case number already generated in handle_message, use the one from callback
-        case_number = "CASE-" + abuse_no_from_callback
-        
+    # Admin check for sensitive actions (re-using existing admin check logic)
+    if query.message.chat_id < 0:
         try:
-            group_chat = context.bot.get_chat(chat_id=group_id_for_case)
-            user_info = context.bot.get_chat_member(chat_id=group_id_for_case, user_id=user_id_for_case).user
-            
-            case_details_message = (
-                f"**🚨 Naya Incident Case 🚨**\n\n"
-                f"**Case Number:** `{case_number}`\n"
-                f"**User:** {user_info.mention_html()} (`{user_info.id}`)\n"
-                f"**Group:** {group_chat.title} (`{group_chat.id}`)\n"
-                f"**Samay:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
-                f"**Mool Message:**\n"
-                f"```\n{original_abusive_content}\n```"
-            )
-            
-            sent_case_message = context.bot.send_message( # Store the sent message object
-                chat_id=CASE_CHANNEL_ID,
-                text=case_details_message,
-                parse_mode='HTML'
-            )
-            
-            # Direct link to the forwarded message in the case channel
-            case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
-            
-            query.edit_message_text(
-                text=f"✅ Abuse Details successfully forwarded to the case channel.\n\n"
-                     f"Case Link: [View Details]({case_channel_link})",
-                parse_mode='Markdown',
-                disable_web_page_preview=True # To avoid showing a preview of the channel link
-            )
-            
-            # incidents_collection.update_one({"user_id": user_id_for_case, "abuse_number": abuse_no_from_callback}, {"$set": {"case_status": "forwarded", "case_channel_message_id": sent_case_message.message_id}})
-        except Exception as e:
-            query.edit_message_text(f"Abuse Details forward karte samay error hui: {e}")
-            print(f"Error forwarding case: {e}")
+            member = await context.bot.get_chat_member(chat_id=query.message.chat_id, user_id=query.from_user.id)
+            if not (member.status == 'administrator' or member.status == 'creator'):
+                await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
+                return
+        except Exception:
+            await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai. Bot ko 'Get Group Info' permission ki zaroorat ho sakti hai.")
+            return
+    elif query.message.chat_id > 0 and not is_admin(query.from_user.id):
+        await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
+        return
+
+    parts = data.split('_')
+    user_id_for_case = int(parts[2])
+    group_id_for_case = int(parts[3])
+    original_message_id = int(parts[4])
+    abuse_no_from_callback = parts[5]
+
+    original_abusive_content = "Original message content not available (deleted or not logged)."
+    # Agar aap MongoDB use kar rahe hain, toh yahan se abusive content fetch kar sakte hain
+    # incident = incidents_collection.find_one({"user_id": user_id_for_case, "chat_id": group_id_for_case, "abuse_number": abuse_no_from_callback})
+    # if incident and "abusive_message_content" in incident:
+    #     original_abusive_content = incident["abusive_message_content"]
+
+    case_number = "CASE-" + abuse_no_from_callback
+    
+    try:
+        group_chat = await context.bot.get_chat(chat_id=group_id_for_case) # Await get_chat
+        user_info = await context.bot.get_chat_member(chat_id=group_id_for_case, user_id=user_id_for_case) # Await get_chat_member
+        
+        case_details_message = (
+            f"**🚨 Naya Incident Case 🚨**\n\n"
+            f"**Case Number:** `{case_number}`\n"
+            f"**User:** {user_info.user.mention_html()} (`{user_info.user.id}`)\n" # Access user_info.user.mention_html()
+            f"**Group:** {group_chat.title} (`{group_chat.id}`)\n"
+            f"**Samay:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
+            f"**Mool Message:**\n"
+            f"```\n{original_abusive_content}\n```"
+        )
+        
+        sent_case_message = await context.bot.send_message( # Await send_message
+            chat_id=CASE_CHANNEL_ID,
+            text=case_details_message,
+            parse_mode='HTML'
+        )
+        
+        case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
+        
+        await query.edit_message_text( # Await edit_message_text
+            text=f"✅ Abuse Details successfully forwarded to the case channel.\n\n"
+                 f"Case Link: [View Details]({case_channel_link})",
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        
+        # incidents_collection.update_one({"user_id": user_id_for_case, "abuse_number": abuse_no_from_callback}, {"$set": {"case_status": "forwarded", "case_channel_message_id": sent_case_message.message_id}})
+    except Exception as e:
+        await query.edit_message_text(f"Abuse Details forward karte samay error hui: {e}") # Await edit_message_text
+        print(f"Error forwarding case: {e}")
+
 
 # Error Handler ab yahan se hata diya gaya hai, ise main polling loop mein manage kiya jayega.
 # def error_handler(update: object, context: CallbackContext) -> None:
@@ -540,13 +564,16 @@ def run_telegram_bot():
 
     # Message Handler (text messages, not commands)
     # Naye members ke liye handler
-    dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member)) # 'Filters' ko 'filters' se replace kiya
+    dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     
     # Abusive messages aur broadcast message response ke liye
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # 'Filters' ko 'filters' se replace kiya
+    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Callback Query Handler (buttons ke liye)
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
+
+    # `view_case_` callback handler को अलग से जोड़ा गया है
+    dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
     # Error handling directly Application.run_polling() mein manage hota hai.
     # dispatcher.add_handler(ErrorHandler(error_handler)) # Is line ko hata diya
