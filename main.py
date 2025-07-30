@@ -1,9 +1,11 @@
-# bot.py
 import os
+import time
+from datetime import datetime, timedelta
+import threading
 import asyncio
 import logging
-from datetime import datetime, timedelta
 
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
     CommandHandler, MessageHandler, filters, CallbackContext,
@@ -19,6 +21,7 @@ CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin")
+PORT = int(os.getenv("PORT", 8000))
 
 # Admin User IDs (Jinhe broadcast/stats commands ka access hoga)
 ADMIN_USER_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_USER_IDS", "").split(',') if admin_id]
@@ -36,9 +39,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Flask App Initialization ---
+app = Flask(__name__)
+
 # --- Telegram Bot Setup ---
-# Application को यहीं initialize करें
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+# Application को globally declare करें, लेकिन run_polling में इसे चलाएं
+application = None # इसे __main__ ब्लॉक में initialize करेंगे
 
 # Profanity Filter को initialize करें
 profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -49,19 +55,24 @@ def is_admin(user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
     """Logs messages to a designated Telegram channel."""
-    if LOG_CHANNEL_ID:
+    # Ensure application is initialized before using it
+    if application and LOG_CHANNEL_ID:
         try:
             await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Error logging to channel: {e}")
+    elif not application:
+        logger.warning("Application not initialized, cannot log to channel.")
 
-# --- Bot Commands Handlers (Same as before) ---
+# --- Bot Commands Handlers (Same as previous, omitted for brevity but include all) ---
+# ... (All your existing async functions like start, stats, broadcast_command, add_abuse_word,
+#      welcome_new_member, handle_all_messages, view_case_details_forward, button_callback_handler)
+#      should be here. I'm just putting a placeholder to keep the example concise.
+
 async def start(update: Update, context: CallbackContext) -> None:
-    """Handles the /start command, sending a welcome message."""
     user = update.message.from_user
     bot_info = await context.bot.get_me()
     bot_name = bot_info.first_name
-
     welcome_message = (
         f"👋 <b>Namaste {user.first_name}!</b>\n\n"
         f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -73,7 +84,6 @@ async def start(update: Update, context: CallbackContext) -> None:
         f"• Incident logging\n\n"
         f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
     )
-
     keyboard = [
         [InlineKeyboardButton("❓ Help", callback_data="help_menu")],
         [InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
@@ -82,20 +92,17 @@ async def start(update: Update, context: CallbackContext) -> None:
         [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
         text=welcome_message,
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
     logger.info(f"User {user.first_name} ({user.id}) started the bot.")
-    
+
 async def stats(update: Update, context: CallbackContext) -> None:
-    """Handles the /stats command, showing bot uptime and dummy stats (admin only)."""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
-
     stats_message = (
         f"📊 <b>Bot Status:</b>\n\n"
         f"• Total Users (Approx): 1000+ (dummy)\n"
@@ -108,36 +115,28 @@ async def stats(update: Update, context: CallbackContext) -> None:
     logger.info(f"Admin {update.effective_user.id} requested stats.")
 
 async def broadcast_command(update: Update, context: CallbackContext) -> None:
-    """Initiates the broadcast process (admin only)."""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
-    
     if update.message.chat.type != 'private':
         await update.message.reply_text("Broadcast command sirf private chat mein hi shuru ki ja sakti hai.")
         return
-
     await update.message.reply_text("Kripya apna message bhejein jo sabhi groups par broadcast karna hai.")
     BROADCAST_MESSAGE[update.effective_user.id] = None
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
 
 async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
-    """Confirms and executes the broadcast to dummy group IDs."""
     query = update.callback_query
     await query.answer()
-    
     user_id = query.from_user.id
     if not is_admin(user_id) or not BROADCAST_MESSAGE.get(user_id):
         await query.edit_message_text("Invalid action or session expired.")
         return
-        
     broadcast_msg = BROADCAST_MESSAGE.pop(user_id)
-    
     if broadcast_msg:
         dummy_group_ids = [
             -1001234567890, # Example: Replace with a real group ID where your bot is present
         ]
-        
         success_count = 0
         fail_count = 0
         for chat_id in dummy_group_ids:
@@ -152,27 +151,22 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
             except Exception as e:
                 fail_count += 1
                 logger.error(f"Failed to broadcast to {chat_id}: {e}")
-        
         await query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
     else:
         await query.edit_message_text("Broadcast message not found.")
 
 async def add_abuse_word(update: Update, context: CallbackContext) -> None:
-    """Adds a new abusive word to MongoDB (admin only)."""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
-
     if not context.args:
         await update.message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: `/addabuse <shabd>`")
         return
-
     word_to_add = " ".join(context.args).lower().strip()
     if not word_to_add:
         await update.message.reply_text("Kripya ek valid shabd dein.")
         return
-
     try:
         if profanity_filter.add_bad_word(word_to_add):
             await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai\\.", parse_mode='MarkdownV2')
@@ -184,10 +178,8 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error adding abuse word {word_to_add}: {e}")
 
 async def welcome_new_member(update: Update, context: CallbackContext) -> None:
-    """Greets new members and logs bot joining new groups."""
     new_members = update.message.new_chat_members
     chat = update.message.chat
-
     for member in new_members:
         if member.id == context.bot.get_me().id:
             log_message = (
@@ -208,14 +200,9 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
             logger.info(f"User {member.full_name} ({member.id}) joined group {chat.title} ({chat.id}).")
 
 async def handle_all_messages(update: Update, context: CallbackContext) -> None:
-    """
-    Processes incoming text messages, handling broadcast messages first,
-    then checking for profanity.
-    """
     user = update.message.from_user
     chat = update.message.chat
     message_text = update.message.text
-
     if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
         if update.message.text:
             BROADCAST_MESSAGE[user.id] = update.message
@@ -226,7 +213,6 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
         else:
             await update.message.reply_text("Kripya ek text message bhejein broadcast karne ke liye.")
         return
-
     if message_text and not update.message.via_bot:
         if profanity_filter.contains_profanity(message_text):
             try:
@@ -234,16 +220,13 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 logger.info(f"Deleted abusive message from {user.username or user.full_name} in {chat.title or chat.type}.")
             except Exception as e:
                 logger.error(f"Error deleting message: {e}. Make sure the bot has 'Delete Messages' admin permission.")
-
             abuse_no = str(abs(hash(f"{user.id}-{chat.id}-{update.message.message_id}")))[:6]
-
             notification_message = (
                 f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
                 f"{user.mention_html()} (<code>{user.id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\\\n\\\n"
                 f"@{GROUP_ADMIN_USERNAME}, kripya sadasya ke vyavhaar ki samiksha karein.\\\n\\\n"
                 f"Case ID: <code>{abuse_no}</code>"
             )
-            
             keyboard = [
                 [
                     InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
@@ -254,14 +237,12 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-
             sent_notification = await context.bot.send_message(
                 chat_id=chat.id,
                 text=notification_message,
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
-            
             await context.bot.send_message(
                 chat_id=chat.id,
                 text="<b>Check Case</b> ⬆️",
@@ -271,16 +252,12 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
             logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {abuse_no}")
 
 async def view_case_details_forward(update: Update, context: CallbackContext) -> None:
-    """Forwards case details to a dedicated channel (admin/group admin only)."""
     query = update.callback_query
     await query.answer()
-
     data = query.data
-    
     if not data.startswith("view_case_"):
         await query.edit_message_text("Invalid case view request.")
         return
-
     if query.message.chat_id < 0:
         try:
             member = await context.bot.get_chat_member(chat_id=query.message.chat_id, user_id=query.from_user.id)
@@ -293,21 +270,16 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
     elif query.message.chat_id > 0 and not is_admin(query.from_user.id):
         await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
         return
-
     parts = data.split('_')
     user_id_for_case = int(parts[2])
     group_id_for_case = int(parts[3])
     original_message_id = int(parts[4])
     abuse_no_from_callback = parts[5]
-
     original_abusive_content = "Original message content not available (deleted for profanity)."
-    
     case_number = "CASE-" + abuse_no_from_callback
-    
     try:
         group_chat = await context.bot.get_chat(chat_id=group_id_for_case)
         user_info = await context.bot.get_chat_member(chat_id=group_id_for_case, user_id=user_id_for_case)
-        
         case_details_message = (
             f"<b>🚨 Naya Incident Case 🚨</b>\n\n"
             f"<b>Case Number:</b> <code>{case_number}</code>\n"
@@ -317,33 +289,31 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
             f"<b>Mool Message:</b>\n"
             f"<code>{original_abusive_content}</code>"
         )
-        
-        sent_case_message = await application.bot.send_message(
-            chat_id=CASE_CHANNEL_ID,
-            text=case_details_message,
-            parse_mode='HTML'
-        )
-        
-        case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
-        
-        await query.edit_message_text(
-            text=f"✅ Abuse Details successfully forwarded to the case channel.\\\n\\\n"
-                 f"Case Link: <a href='{case_channel_link}'>View Details</a>",
-            parse_mode='HTML',
-            disable_web_page_preview=True
-        )
-        logger.info(f"Case {case_number} forwarded for user {user_id_for_case} in group {group_id_for_case}.")
+        if application:
+            sent_case_message = await application.bot.send_message(
+                chat_id=CASE_CHANNEL_ID,
+                text=case_details_message,
+                parse_mode='HTML'
+            )
+            case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
+            await query.edit_message_text(
+                text=f"✅ Abuse Details successfully forwarded to the case channel.\\\n\\\n"
+                     f"Case Link: <a href='{case_channel_link}'>View Details</a>",
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            logger.info(f"Case {case_number} forwarded for user {user_id_for_case} in group {group_id_for_case}.")
+        else:
+            await query.edit_message_text("Bot application not initialized. Cannot forward details.")
+            logger.error("Application not initialized, cannot forward case details.")
     except Exception as e:
         await query.edit_message_text(f"Abuse Details forward karte samay error hui: {e}")
         logger.error(f"Error forwarding case: {e}")
 
 async def button_callback_handler(update: Update, context: CallbackContext) -> None:
-    """Handles all inline keyboard button callbacks."""
     query = update.callback_query
     await query.answer()
-
     data = query.data
-    
     if data.startswith(("admin_actions_menu_", "mute_", "ban_", "kick_", "warn_user_")):
         if query.message.chat_id < 0:
             try:
@@ -357,7 +327,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         elif query.message.chat_id > 0 and not is_admin(query.from_user.id):
             await query.edit_message_text("Aapke paas is action ko perform karne ki permission nahi hai.")
             return
-
     if data == "help_menu":
         help_text = (
             f"<b>Bot Help:</b>\n\n"
@@ -372,7 +341,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='HTML')
-
     elif data == "other_bots":
         other_bots_text = (
             f"<b>🤖 Hamare Dusre Bots:</b>\n\n"
@@ -382,7 +350,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode='HTML')
-
     elif data == "donate_info":
         donate_text = (
             f"💖 <b>Dosto, agar aapko hamara bot aapke group ke liye accha lagta hai, "
@@ -393,12 +360,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode='HTML')
-        
     elif data == "main_menu":
         user = query.from_user
         bot_info = await context.bot.get_me()
         bot_name = bot_info.first_name
-
         welcome_message = (
             f"👋 <b>Namaste {user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -419,12 +384,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode='HTML')
-
     elif data.startswith("admin_actions_menu_"):
         parts = data.split('_')
         user_id_to_act = int(parts[3])
         chat_id_for_action = int(parts[4])
-
         action_keyboard = [
             [
                 InlineKeyboardButton("🔇 Mute User", callback_data=f"mute_time_{user_id_to_act}_{chat_id_for_action}"),
@@ -436,12 +399,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             ]
         ]
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(action_keyboard))
-
     elif data.startswith("mute_time_"):
         parts = data.split('_')
         user_id = int(parts[2])
         chat_id = int(parts[3])
-
         mute_time_keyboard = [
             [
                 InlineKeyboardButton("1 Day", callback_data=f"mute_{user_id}_{chat_id}_{86400}"),
@@ -459,24 +420,20 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             text=f"Kitne samay ke liye mute karna hai {user_id} ko?",
             reply_markup=InlineKeyboardMarkup(mute_time_keyboard)
         )
-
     elif data.startswith("mute_") and len(data.split('_')) == 4:
         parts = data.split('_')
         user_id = int(parts[1])
         chat_id = int(parts[2])
         duration_seconds = int(parts[3])
-        
         try:
             permissions = ChatPermissions(can_send_messages=False)
             until_date = datetime.now() + timedelta(seconds=duration_seconds) if duration_seconds > 0 else None
-            
             await context.bot.restrict_chat_member(
                 chat_id=chat_id, 
                 user_id=user_id, 
                 permissions=permissions, 
                 until_date=until_date
             )
-            
             if duration_seconds == 0:
                 action_text = f"User <b>{user_id}</b> ko <b>permanently mute</b> kiya gaya hai."
             elif duration_seconds == 86400:
@@ -489,13 +446,11 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
                 action_text = f"User <b>{user_id}</b> ko <b>6 mahine</b> ke liye mute kiya gaya hai."
             else:
                 action_text = f"User <b>{user_id}</b> ko <b>{duration_seconds} seconds</b> ke liye mute kiya gaya hai."
-
             await query.edit_message_text(action_text, parse_mode='HTML')
             logger.info(f"User {user_id} muted in chat {chat_id} by admin {query.from_user.id}.")
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
             logger.error(f"Error muting user {user_id} in chat {chat_id}: {e}")
-
     elif data.startswith("ban_"):
         parts = data.split('_')
         user_id = int(parts[1])
@@ -507,7 +462,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         except Exception as e:
             await query.edit_message_text(f"Ban karte samay error hui: {e}")
             logger.error(f"Error banning user {user_id} in chat {chat_id}: {e}")
-
     elif data.startswith("kick_"):
         parts = data.split('_')
         user_id = int(parts[1])
@@ -520,12 +474,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         except Exception as e:
             await query.edit_message_text(f"Kick karte samay error hui: {e}")
             logger.error(f"Error kicking user {user_id} in chat {chat_id}: {e}")
-
     elif data.startswith("warn_user_"):
         parts = data.split('_')
         user_id = int(parts[2])
         chat_id = int(parts[3])
-
         try:
             user_info = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             warning_text_by_admin = (
@@ -540,29 +492,27 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             await query.edit_message_text(f"Warning message bhejte samay error hui: {e}")
             logger.error(f"Error warning user {user_id} in chat {chat_id}: {e}")
 
-# --- Telegram Bot Polling Function ---
-async def start_telegram_bot_polling_async():
-    """Telegram बॉट को पोलing मोड में चलाता है."""
-    try:
-        # Puraani webhook clear karein (agar koi hai)
-        current_webhook = await application.bot.get_webhook_info()
-        if current_webhook.url:
-            logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-            await application.bot.delete_webhook()
-            logger.info("Cleared any existing webhooks.")
-        else:
-            logger.info("No active webhook found to clear.")
+# --- Flask Health Check Endpoint ---
+@app.route('/')
+def health_check():
+    """Koyeb health checks ke liye simple endpoint."""
+    return "Bot is healthy!", 200
 
-        logger.info("Telegram Bot starting in long polling mode...")
-        # run_polling को सीधे await करें
-        await application.run_polling(drop_pending_updates=True, stop_signals=())
-        logger.info("Telegram Bot polling stopped.")
-    except Exception as e:
-        logger.error(f"Error in Telegram Bot polling: {e}", exc_info=True)
-
+# --- Function to run Flask in a separate thread ---
+def run_flask_app():
+    """Flask application ko ek alag thread mein chalata hai."""
+    logger.info(f"Flask application starting on port {PORT} in a separate thread for health checks...")
+    # Flask को run करते समय use_reloader=False सेट करना महत्वपूर्ण है,
+    # ताकि दो Flask इंस्टेंस न चलें, खासकर जब debug=False हो।
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # Telegram Bot Application को यहां initialize करें
+    global application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Dispatcher को configure करें
     dispatcher = application
 
     # Command Handlers
@@ -579,14 +529,28 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
-    # Telegram बॉट को asyncio.run() का उपयोग करके चलाएं
-    logger.info("Starting Telegram Bot polling in the main thread...")
+    # Flask app को एक अलग थ्रेड में स्टार्ट करें
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True # Main program बंद होने पर thread भी बंद हो जाएगा
+    flask_thread.start()
+
+    # Telegram बॉट को सीधे application.run_polling() से चलाएं
+    # asyncio.run() की आवश्यकता नहीं है, क्योंकि run_polling खुद एक इवेंट लूप को हैंडल करता है।
+    logger.info("Starting Telegram Bot in long polling mode...")
     try:
-        asyncio.run(start_telegram_bot_polling_async())
+        # Puraani webhook clear karein (agar koi hai)
+        current_webhook = application.bot.get_webhook_info() # Synchronous call, as we are not inside an async function yet
+        if current_webhook.url:
+            logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
+            application.bot.delete_webhook() # Synchronous call
+            logger.info("Cleared any existing webhooks.")
+        else:
+            logger.info("No active webhook found to clear.")
+
+        application.run_polling(drop_pending_updates=True, stop_signals=())
+        logger.info("Telegram Bot polling stopped.")
     except KeyboardInterrupt:
         logger.info("Bot stopped by user (Ctrl+C).")
-    except RuntimeError as e:
-        logger.error(f"Runtime Error in main asyncio.run: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"An unexpected error occurred in main bot execution: {e}", exc_info=True)
+        logger.error(f"Error in Telegram Bot polling: {e}", exc_info=True)
 
