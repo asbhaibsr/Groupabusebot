@@ -123,17 +123,20 @@ async def broadcast_command(update: Update, context: CallbackContext) -> None:
     BROADCAST_MESSAGE[update.effective_user.id] = None # Flag to indicate pending broadcast message
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
 
-async def handle_broadcast_message(update: Update, context: CallbackContext) -> None:
+async def handle_broadcast_message_text(update: Update, context: CallbackContext) -> None:
     """Handles the message to be broadcasted and asks for confirmation."""
     user_id = update.effective_user.id
+    # Check if the user is an admin and is in the broadcast initiation state
     if is_admin(user_id) and user_id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user_id] is None:
-        BROADCAST_MESSAGE[user_id] = update.message
-        await update.message.reply_text("Message received. Kya aap ise broadcast karna chahenge?",
-                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]]))
+        if update.message.text: # Ensure there's a text message
+            BROADCAST_MESSAGE[user_id] = update.message
+            await update.message.reply_text("Message received. Kya aap ise broadcast karna chahenge?",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]]))
+        else:
+            await update.message.reply_text("Kripya ek text message bhejein broadcast karne ke liye.")
     else:
-        # Agar admin broadcast mode mein nahi hai, toh regular message handler call karein
-        # (This case should ideally not happen if /broadcast flow is strict)
-        await handle_message(update, context) # Fallback to general message handling if not in broadcast mode
+        # If not in broadcast mode, pass to general message handler
+        await handle_message(update, context)
 
 async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     """Confirms and executes the broadcast to dummy group IDs."""
@@ -174,6 +177,31 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     else:
         await query.edit_message_text("Broadcast message not found.")
 
+async def add_abuse_word(update: Update, context: CallbackContext) -> None:
+    """Adds a new abusive word to MongoDB (admin only)."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: `/addabuse <shabd>`")
+        return
+
+    word_to_add = " ".join(context.args).lower().strip()
+    if not word_to_add:
+        await update.message.reply_text("Kripya ek valid shabd dein.")
+        return
+
+    try:
+        if profanity_filter.add_bad_word(word_to_add):
+            await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai.", parse_mode='MarkdownV2')
+            logger.info(f"Admin {update.effective_user.id} added abuse word: {word_to_add}.")
+        else:
+            await update.message.reply_text(f"Shabd '`{word_to_add}`' pehle se hi list mein maujood hai.", parse_mode='MarkdownV2')
+    except Exception as e:
+        await update.message.reply_text(f"Shabd jodte samay error hui: {e}")
+        logger.error(f"Error adding abuse word {word_to_add}: {e}")
+
 async def welcome_new_member(update: Update, context: CallbackContext) -> None:
     """Greets new members and logs bot joining new groups."""
     new_members = update.message.new_chat_members
@@ -205,11 +233,6 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     chat = update.message.chat
     
-    # If admin is in broadcast mode, pass to broadcast handler
-    if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
-        await handle_broadcast_message(update, context)
-        return
-
     # Check for profanity
     if message_text and profanity_filter.contains_profanity(message_text):
         try:
@@ -353,7 +376,8 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             f"• Admins user par action le sakte hain (mute, ban, kick, warn).\n"
             f"• /start - Bot ka welcome message.\n"
             f"• /stats - Bot ka status (Admins only).\n"
-            f"• /broadcast - Sabhi groups par message bhejen (Admins only).\n\n"
+            f"• /broadcast - Sabhi groups par message bhejen (Admins only).\n"
+            f"• /addabuse - MongoDB mein naya gaali shabd jodein (Admins only).\n\n"
             f"Agar aapko aur madad chahiye, toh @asbhaibsr se contact karein."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main", callback_data="main_menu")]]
@@ -549,14 +573,11 @@ def dummy_telegram_webhook():
 def run_flask_app():
     """Flask application ko ek alag thread mein chalata hai."""
     logger.info(f"Flask application starting on port {PORT} in a separate thread...")
-    # WARNING: This is a development server. Do not use it in a production deployment.
-    # Koyeb health checks ke liye yeh theek hai, lekin agar aapko high-traffic API chahiye
-    # toh Gunicorn jaisa production-ready WSGI server alag se use karna chahiye.
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # --- Telegram Bot Polling Function ---
 async def start_telegram_bot_polling():
-    """Telegram बॉट को पोलिंग मोड में चलाता है."""
+    """Telegram बॉट को पोलing मोड में चलाता है."""
     try:
         # Puraani webhook clear karein (agar koi hai)
         current_webhook = await application.bot.get_webhook_info()
@@ -590,11 +611,12 @@ if __name__ == "__main__":
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("stats", stats))
     dispatcher.add_handler(CommandHandler("broadcast", broadcast_command))
-    # Jab broadcast command shuru ki jaye, to uske baad ke message ko handle kare
-    dispatcher.add_handler(MessageHandler(filters.COMMAND("broadcast") & filters.ChatType.PRIVATE, handle_broadcast_message))
-
+    dispatcher.add_handler(CommandHandler("addabuse", add_abuse_word)) # New command handler
 
     # Message Handlers
+    # filters.COMMAND("broadcast") ko bina parenthesis ke use karein
+    # Isse yeh सुनिश्चित होगा ki /broadcast command ke baad aane wale text messages ko handle_broadcast_message_text function handle kare.
+    dispatcher.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.COMMAND("broadcast"), handle_broadcast_message_text))
     dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
@@ -603,18 +625,12 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
     # Telegram बॉट को asyncio.run() ka upyog karke chalaein
-    # Yeh code tab chalega jab Flask thread start ho jaayega.
-    # asyncio.run() naya event loop banayega aur usmein bot ko chalayega.
     logger.info("Starting Telegram Bot polling in the main thread...")
     try:
         asyncio.run(start_telegram_bot_polling())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user (Ctrl+C).")
     except RuntimeError as e:
-        # Agar 'This event loop is already running' error phir bhi aaye,
-        # to yeh Koyeb ke environment ya Python version ki vajah se ho sakta hai.
-        # Is case mein, threading.Thread(target=asyncio.run, args=(start_telegram_bot_polling(),))
-        # ka prayog karna pad sakta hai, jisse bachne ki hum koshish kar rahe hain.
         logger.error(f"Runtime Error in main asyncio.run: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"An unexpected error occurred in main bot execution: {e}", exc_info=True)
