@@ -43,8 +43,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- Telegram Bot Setup ---
-# Application को globally initialize करें
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+# Application को globally initialize करें, लेकिन loop को निर्दिष्ट न करें
+# ताकि run_polling खुद एक नया loop हैंडल कर सके।
+# इसे global scope में ही रखें।
+application = None # इसे __main__ ब्लॉक में initialize करेंगे
 
 # Profanity Filter को initialize करें
 profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -55,11 +57,14 @@ def is_admin(user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
     """Logs messages to a designated Telegram channel."""
-    if LOG_CHANNEL_ID:
+    # Ensure application is initialized before using it
+    if application and LOG_CHANNEL_ID:
         try:
             await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Error logging to channel: {e}")
+    elif not application:
+        logger.warning("Application not initialized, cannot log to channel.")
 
 # --- Bot Commands Handlers ---
 async def start(update: Update, context: CallbackContext) -> None:
@@ -336,22 +341,28 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
             f"<code>{original_abusive_content}</code>"
         )
         
-        sent_case_message = await application.bot.send_message(
-            chat_id=CASE_CHANNEL_ID,
-            text=case_details_message,
-            parse_mode='HTML'
-        )
-        
-        # Create a link to the forwarded message in the case channel
-        case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
-        
-        await query.edit_message_text(
-            text=f"✅ Abuse Details successfully forwarded to the case channel.\\\n\\\n"
-                 f"Case Link: <a href='{case_channel_link}'>View Details</a>",
-            parse_mode='HTML',
-            disable_web_page_preview=True
-        )
-        logger.info(f"Case {case_number} forwarded for user {user_id_for_case} in group {group_id_for_case}.")
+        # Ensure application is initialized before calling send_message
+        if application:
+            sent_case_message = await application.bot.send_message(
+                chat_id=CASE_CHANNEL_ID,
+                text=case_details_message,
+                parse_mode='HTML'
+            )
+            
+            # Create a link to the forwarded message in the case channel
+            case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
+            
+            await query.edit_message_text(
+                text=f"✅ Abuse Details successfully forwarded to the case channel.\\\n\\\n"
+                     f"Case Link: <a href='{case_channel_link}'>View Details</a>",
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            logger.info(f"Case {case_number} forwarded for user {user_id_for_case} in group {group_id_for_case}.")
+        else:
+            await query.edit_message_text("Bot application not initialized. Cannot forward details.")
+            logger.error("Application not initialized, cannot forward case details.")
+
     except Exception as e:
         await query.edit_message_text(f"Abuse Details forward karte samay error hui: {e}")
         logger.error(f"Error forwarding case: {e}")
@@ -511,7 +522,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
                 action_text = f"User <b>{user_id}</b> ko <b>{duration_seconds} seconds</b> ke liye mute kiya gaya hai."
 
             await query.edit_message_text(action_text, parse_mode='HTML')
-            logger.info(f"User {user_id} muted in chat {chat_id} for {duration_seconds} seconds by admin {query.from_user.id}.")
+            logger.info(f"User {user_id} muted in chat {chat_id} by admin {query.from_user.id}.")
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
             logger.error(f"Error muting user {user_id} in chat {chat_id}: {e}")
@@ -562,37 +573,31 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             logger.error(f"Error warning user {user_id} in chat {chat_id}: {e}")
 
 
-# --- Flask Health Check & Dummy Webhook Endpoint (For Koyeb) ---
+# --- Flask Health Check Endpoint ---
 @app.route('/')
 def health_check():
     """Koyeb health checks ke liye simple endpoint."""
     return "Bot is healthy!", 200
 
-# Dummy /telegram endpoint to avoid 404s if Telegram tries to send updates
-# (even if bot is in long polling mode).
-@app.route('/telegram', methods=['POST'])
-def dummy_telegram_webhook():
-    """Dummy endpoint to catch any stray webhook requests."""
-    # This endpoint is just for Koyeb's expectation of a web server.
-    # The bot itself runs in long polling mode in a separate thread.
-    logger.info("Received a POST request on /telegram, but bot is in long polling mode. Ignoring.")
-    return 'ok', 200
-
 # --- Function to run Flask in a separate thread ---
 def run_flask_app():
     """Flask application ko ek alag thread mein chalata hai."""
     logger.info(f"Flask application starting on port {PORT} in a separate thread...")
+    # Flask को run करते समय use_reloader=False सेट करना महत्वपूर्ण है,
+    # ताकि दो Flask इंस्टेंस न चलें, खासकर जब debug=False हो।
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # --- Telegram Bot Polling Function ---
-async def start_telegram_bot_polling():
+async def start_telegram_bot_polling_async():
     """Telegram बॉट को पोलing मोड में चलाता है."""
+    global application # Global application variable ko access karein
+
     try:
         # Puraani webhook clear karein (agar koi hai)
         current_webhook = await application.bot.get_webhook_info()
         if current_webhook.url:
             logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-            await application.bot.set_webhook(url="")
+            await application.bot.delete_webhook() # delete_webhook() use karein
             logger.info("Cleared any existing webhooks.")
         else:
             logger.info("No active webhook found to clear.")
@@ -600,6 +605,7 @@ async def start_telegram_bot_polling():
         logger.info("Telegram Bot starting in long polling mode...")
         # `stop_signals=()` आवश्यक है जब `run_polling` को एक अलग थ्रेड में चलाया जाए
         # ताकि SIGINT/SIGTERM हैंडलिंग मुख्य थ्रेड के साथ हस्तक्षेप न करे।
+        # application.run_polling() को directly await karein
         await application.run_polling(drop_pending_updates=True, stop_signals=())
         logger.info("Telegram Bot polling stopped.")
     except Exception as e:
@@ -608,23 +614,19 @@ async def start_telegram_bot_polling():
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Flask app ko ek alag thread mein start karein
-    flask_thread = threading.Thread(target=run_flask_app)
-    flask_thread.daemon = True # Main program band hone par thread bhi band ho jaayega
-    flask_thread.start()
+    # Telegram Bot Application को यहां initialize करें
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Dispatcher ko configure karein
+    # Dispatcher को configure करें
     dispatcher = application
 
     # Command Handlers
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("stats", stats))
     dispatcher.add_handler(CommandHandler("broadcast", broadcast_command))
-    dispatcher.add_handler(CommandHandler("addabuse", add_abuse_word)) # New command handler
+    dispatcher.add_handler(CommandHandler("addabuse", add_abuse_word)) 
 
     # Message Handlers
-    # filters.TEXT & ~filters.COMMAND: Yeh sabhi non-command text messages ko handle karega.
-    # handle_all_messages function phir check karega ki kya yeh broadcast message hai ya profanity.
     dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
     dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     
@@ -632,10 +634,15 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
-    # Telegram बॉट को asyncio.run() ka upyog karke chalaein
+    # Flask app को एक अलग थ्रेड में स्टार्ट करें
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True # Main program बंद होने पर thread भी बंद हो जाएगा
+    flask_thread.start()
+
+    # Telegram बॉट को asyncio.run() का उपयोग करके चलाएं
     logger.info("Starting Telegram Bot polling in the main thread...")
     try:
-        asyncio.run(start_telegram_bot_polling())
+        asyncio.run(start_telegram_bot_polling_async())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user (Ctrl+C).")
     except RuntimeError as e:
