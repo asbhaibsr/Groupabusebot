@@ -1,7 +1,5 @@
-# profanity_filter.py
-
 import os
-# from pymongo import MongoClient # Uncomment if fetching bad words from MongoDB
+from pymongo import MongoClient # Uncomment this line
 
 class ProfanityFilter:
     def __init__(self, mongo_uri=None):
@@ -11,26 +9,34 @@ class ProfanityFilter:
         """
         self.bad_words = []
         if mongo_uri:
-            # self.client = MongoClient(mongo_uri)
-            # self.db = self.client.your_database_name # Apne database ka naam yahan dein
-            # self.bad_words_collection = self.db.bad_words # Apne collection ka naam yahan dein
-            self._load_bad_words_from_db()
+            try:
+                self.client = MongoClient(mongo_uri)
+                # Apne database ka naam yahan dein
+                self.db = self.client.get_database("asfilter") # <-- **APNE DATABASE KA NAAM YAHAN DALEN**
+                # Apne collection ka naam yahan dein
+                self.bad_words_collection = self.db.get_collection("bad_words") # <-- **APNE COLLECTION KA NAAM YAHAN DALEN**
+                self._load_bad_words_from_db()
+            except Exception as e:
+                print(f"Error connecting to MongoDB or loading bad words: {e}. Using default list.")
+                self._load_default_bad_words()
         else:
-            # Agar MongoDB nahi hai, toh ek default list use karein (testing ke liye)
             self._load_default_bad_words()
 
     def _load_bad_words_from_db(self):
         """
         MongoDB se gaaliyon ki list load karta hai.
         """
-        # Ye placeholder hai. Real code mein MongoDB se fetch karein
-        # try:
-        #     for doc in self.bad_words_collection.find({}):
-        #         self.bad_words.append(doc['word'].lower())
-        #     print("Bad words loaded from MongoDB.")
-        # except Exception as e:
-        #     print(f"Error loading bad words from MongoDB: {e}. Using default list.")
-        self.bad_words = ["gaali1", "gaali2", "chutiya", "randi", "behenchod"] # Fallback/Example
+        try:
+            # सुनिश्चित करें कि आपके collection में documents में 'word' field है
+            # उदाहरण के लिए, आपके कलेक्शन में डॉक्यूमेंट्स ऐसे हो सकते हैं: {"word": "chutiya"}, {"word": "randi"}
+            cursor = self.bad_words_collection.find({})
+            for doc in cursor:
+                if 'word' in doc and isinstance(doc['word'], str):
+                    self.bad_words.append(doc['word'].lower())
+            print(f"Bad words loaded from MongoDB: {len(self.bad_words)} words.")
+        except Exception as e:
+            print(f"Error loading bad words from MongoDB: {e}. Using default list.")
+            self._load_default_bad_words() # Fallback to default if DB load fails
             
     def _load_default_bad_words(self):
         """
@@ -40,21 +46,27 @@ class ProfanityFilter:
             "chutiya", "randi", "behenchod", "madarchod", "saala", "kutta", 
             "bhosdike", "harami", "fuck", "shit", "bitch", "asshole", "bastard"
         ]
-        print("Default bad words loaded.")
+        print(f"Default bad words loaded: {len(self.bad_words)} words.")
 
     def contains_profanity(self, text: str) -> bool:
         """
-        Check karta hai ki diye gaye text mein koi gaali hai ya nahi.
+        Check karta hai ki diye गए text mein koi gaali hai ya nahi.
         """
         text_lower = text.lower()
         for word in self.bad_words:
+            # Word boundary check is important for more accurate filtering
+            # Example: "ass" in "class" should not be flagged.
+            # Using simple 'in' for now, but regex can be more robust.
             if word in text_lower:
                 return True
         return False
 
 # Example usage (testing ke liye)
 if __name__ == "__main__":
+    # जब आप इसे सीधे रन करते हैं, तो MONGO_DB_URI को सेट करना होगा
+    # उदाहरण: export MONGO_DB_URI="mongodb+srv://user:pass@cluster.mongodb.net/mydatabase?retryWrites=true&w=majority"
     filter = ProfanityFilter(mongo_uri=os.getenv("MONGO_DB_URI")) 
     
     print(f"Is 'teri randi' abusive? {filter.contains_profanity('teri randi')}")
     print(f"Is 'hello world' abusive? {filter.contains_profanity('hello world')}")
+    print(f"Is 'what a chutiya bot' abusive? {filter.contains_profanity('what a chutiya bot')}")
