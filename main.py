@@ -3,8 +3,9 @@
 import os
 import time
 from datetime import datetime, timedelta
-import threading # For running bot in a separate thread
-import asyncio   # Required by python-telegram-bot
+import threading
+import asyncio
+import logging
 
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
@@ -12,7 +13,6 @@ from telegram.ext import (
     CommandHandler, MessageHandler, filters, CallbackContext,
     CallbackQueryHandler, Application
 )
-import logging # For logger.info
 
 # Custom module import
 from profanity_filter import ProfanityFilter
@@ -23,7 +23,7 @@ CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin")
-PORT = int(os.getenv("PORT", 5000)) # Koyeb environment variable se PORT milega
+PORT = int(os.getenv("PORT", 8000))
 
 # Admin User IDs (Jinhe broadcast/stats commands ka access hoga)
 ADMIN_USER_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_USER_IDS", "").split(',') if admin_id]
@@ -31,7 +31,7 @@ ADMIN_USER_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_USER_IDS", "").
 # Bot start time record karein
 bot_start_time = datetime.now()
 
-# Global variable to store broadcast message (temporary, for simple broadcast)
+# Global variable to store broadcast message
 BROADCAST_MESSAGE = {}
 
 # Logging configuration
@@ -51,20 +51,18 @@ application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 # Profanity Filter को initialize करें
 profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
 
-# --- Helper Functions ---
+# --- Helper Functions (Same as before) ---
 def is_admin(user_id: int) -> bool:
-    """Check karta hai ki user admin hai ya nahi."""
     return user_id in ADMIN_USER_IDS
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
-    """Log channel par message bheje ga."""
     if LOG_CHANNEL_ID:
         try:
             await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Error logging to channel: {e}")
 
-# --- Bot Commands Handlers ---
+# --- Bot Commands Handlers (Same as before) ---
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     bot_info = await context.bot.get_me()
@@ -159,7 +157,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                     message_id=broadcast_msg.message_id
                 )
                 success_count += 1
-                time.sleep(0.1) # Flood limits se bachne ke liye
+                time.sleep(0.1)
             except Exception as e:
                 fail_count += 1
                 logger.error(f"Failed to broadcast to {chat_id}: {e}")
@@ -390,7 +388,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode='HTML')
 
-    # --- Admin Actions ---
     elif data.startswith("admin_actions_menu_"):
         parts = data.split('_')
         user_id_to_act = int(parts[3])
@@ -415,15 +412,15 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
 
         mute_time_keyboard = [
             [
-                InlineKeyboardButton("1 Day", callback_data=f"mute_{user_id}_{chat_id}_{86400}"), # 24 hours
-                InlineKeyboardButton("1 Month", callback_data=f"mute_{user_id}_{chat_id}_{2592000}") # 30 days
+                InlineKeyboardButton("1 Day", callback_data=f"mute_{user_id}_{chat_id}_{86400}"),
+                InlineKeyboardButton("1 Month", callback_data=f"mute_{user_id}_{chat_id}_{2592000}")
             ],
             [
-                InlineKeyboardButton("3 Months", callback_data=f"mute_{user_id}_{chat_id}_{7776000}"), # 90 days
-                InlineKeyboardButton("6 Months", callback_data=f"mute_{user_id}_{chat_id}_{15552000}") # 180 days
+                InlineKeyboardButton("3 Months", callback_data=f"mute_{user_id}_{chat_id}_{7776000}"),
+                InlineKeyboardButton("6 Months", callback_data=f"mute_{user_id}_{chat_id}_{15552000}")
             ],
             [
-                InlineKeyboardButton("Permanent", callback_data=f"mute_{user_id}_{chat_id}_0") # Forever mute
+                InlineKeyboardButton("Permanent", callback_data=f"mute_{user_id}_{chat_id}_0")
             ]
         ]
         await query.edit_message_text(
@@ -431,7 +428,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             reply_markup=InlineKeyboardMarkup(mute_time_keyboard)
         )
 
-    elif data.startswith("mute_") and len(data.split('_')) == 4: # Actual mute action
+    elif data.startswith("mute_") and len(data.split('_')) == 4:
         parts = data.split('_')
         user_id = int(parts[1])
         chat_id = int(parts[2])
@@ -521,23 +518,19 @@ def health_check():
 @app.route('/telegram', methods=['POST'])
 def dummy_telegram_webhook():
     """Dummy endpoint to catch any stray webhook requests."""
-    # We are using long polling, so this endpoint shouldn't receive actual updates from Telegram.
-    # It's here primarily to satisfy Koyeb's expectations of a web service.
     logger.info("Received a POST request on /telegram, but bot is in long polling mode.")
-    return 'ok', 200 # Always respond with 'ok'
+    return 'ok', 200
 
 # --- Telegram Bot Polling Function ---
 def run_telegram_bot_polling():
     """Telegram बॉट को पोलिंग मोड में चलाता है."""
-    # This function needs to run asyncio code in a separate thread.
-    # It's important to set up a new event loop for this thread.
+    # Ensure a new event loop is created and set for this thread
     new_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(new_loop)
 
     async def _start_polling():
         try:
             # Telegram API से किसी भी पुराने वेबहुक को हटा दें
-            # यह महत्वपूर्ण है जब हम लॉन्ग पोलिंग पर स्विच कर रहे हों
             current_webhook = await application.bot.get_webhook_info()
             if current_webhook.url:
                 logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
@@ -547,13 +540,13 @@ def run_telegram_bot_polling():
                 logger.info("No active webhook found to clear.")
 
             logger.info("Telegram Bot starting in long polling mode...")
-            # application.run_polling() blocking है, यह तब तक चलेगा जब तक बॉट बंद न हो जाए।
-            # drop_pending_updates=True बॉट के ऑफ़लाइन होने के दौरान आए अपडेट्स को अनदेखा कर देगा।
-            await application.run_polling(drop_pending_updates=True)
+            # IMPORTANT: disable_signals=True will prevent set_wakeup_fd error in sub-threads
+            await application.run_polling(drop_pending_updates=True, stop_signals=()) # Set stop_signals to an empty tuple
             logger.info("Telegram Bot polling stopped.")
         except Exception as e:
             logger.error(f"Error in Telegram Bot polling thread: {e}", exc_info=True)
 
+    # run_until_complete is the correct way to run an async function in a sync context
     new_loop.run_until_complete(_start_polling())
     new_loop.close()
 
@@ -577,25 +570,19 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
     # Telegram बॉट को एक अलग थ्रेड में शुरू करें
-    # यह Flask को मुख्य थ्रेड में चलने देगा।
     telegram_thread = threading.Thread(target=run_telegram_bot_polling)
     telegram_thread.daemon = True # डेमन थ्रेड ताकि मुख्य प्रोग्राम बंद होने पर यह भी बंद हो जाए
     telegram_thread.start()
     
-    # Flask ऐप को चलाएं। Koyeb पर, यह Gunicorn जैसे WSGI सर्वर द्वारा होस्ट किया जाएगा।
-    # local testing के लिए: app.run(host='0.0.0.0', port=PORT, debug=False)
-    # Koyeb उत्पादन के लिए, आप Procfile का उपयोग करेंगे (नीचे देखें)।
     logger.info(f"Flask application starting on port {PORT}...")
-    # Koyeb में `web: python main.py` के लिए, Gunicorn/uWSGI इसे होस्ट करेगा।
-    # इसलिए हमें यहां explicit `app.run()` की आवश्यकता नहीं है।
-    # Gunicorn WSGI को कॉल करेगा, और Flask app को चलाएगा।
-    # हमारा बॉट थ्रेड बैकग्राउंड में चलता रहेगा।
     
     # Flask Development Server को लोकल टेस्टिंग के लिए चलाएं।
     # Koyeb पर, Gunicorn इसे होस्ट करेगा, इसलिए यह लाइन Koyeb पर सीधे नहीं चलेगी।
+    # Koyeb के लिए, हम Procfile में Gunicorn कमांड का उपयोग करेंगे जो 'app' ऑब्जेक्ट को ढूंढेगा।
+    # लेकिन Flask को स्टार्ट करने के लिए एक एंट्री पॉइंट चाहिए।
+    # हम यहां सीधे Flask के development server को चला रहे हैं, जो Koyeb पर Gunicorn से override हो जाएगा।
     try:
         app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
     except Exception as e:
         logger.critical(f"Flask server failed to start: {e}", exc_info=True)
-        # अगर Flask स्टार्ट नहीं हो पाता तो बॉट थ्रेड को भी बंद करने की कोशिश करें
-        # (हालांकि daemon thread खुद ही बंद हो जाएगा जब main process खत्म होगी)
+
