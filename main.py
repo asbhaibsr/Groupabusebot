@@ -17,10 +17,10 @@ from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID") # Telegram Group/Channel ID (e.g., -1001234567890)
-LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")   # Telegram Group/Channel ID
+CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID")
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin") # Replace with your group's admin username
+GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin")
 PORT = int(os.getenv("PORT", 8000))
 
 # Admin User IDs (Jinhe broadcast/stats commands ka access hoga)
@@ -38,11 +38,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Event loop policy सेट करें (Windows के लिए ज़रूरी अगर लोकल पर टेस्ट कर रहे हैं)
-# Koyeb Linux पर चलता है, इसलिए यह अनिवार्य नहीं है, लेकिन लोकल डेवलपमेंट के लिए उपयोगी है।
-if os.name == 'nt':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -153,7 +148,6 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     
     if broadcast_msg:
         # Dummy group IDs - REPLACE with actual group IDs where your bot is present
-        # Note: You can retrieve bot's groups programmatically or store them in a DB.
         dummy_group_ids = [
             -1001234567890, # Example: Replace with a real group ID where your bot is present
             # -1009876543210 # Add more if needed
@@ -161,8 +155,6 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         
         success_count = 0
         fail_count = 0
-        # For a production bot, consider iterating through all chats the bot is in
-        # For now, using dummy IDs.
         for chat_id in dummy_group_ids:
             try:
                 await context.bot.copy_message(
@@ -552,34 +544,29 @@ def dummy_telegram_webhook():
 # --- Telegram Bot Polling Function ---
 def run_telegram_bot_polling():
     """Telegram बॉट को पोलिंग मोड में चलाता है."""
-    # सुनिश्चित करें कि इस थ्रेड के लिए एक नया इवेंट लूप बनाया और सेट किया गया है
-    new_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(new_loop)
+    # `asyncio.Runner` का उपयोग करें ताकि इवेंट लूप के लाइफसाइकिल को बेहतर ढंग से मैनेज किया जा सके।
+    # यह 'Cannot close a running event loop' जैसी समस्याओं को हल करने में मदद कर सकता है।
+    with asyncio.Runner() as runner:
+        async def _start_polling_async():
+            try:
+                current_webhook = await application.bot.get_webhook_info()
+                if current_webhook.url:
+                    logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
+                    await application.bot.set_webhook(url="")
+                    logger.info("Cleared any existing webhooks.")
+                else:
+                    logger.info("No active webhook found to clear.")
 
-    async def _start_polling():
-        try:
-            # Telegram API से किसी भी पुराने वेबहुक को हटा दें
-            # यह महत्वपूर्ण है क्योंकि Koyeb पर long polling का उपयोग कर रहे हैं।
-            current_webhook = await application.bot.get_webhook_info()
-            if current_webhook.url:
-                logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-                await application.bot.set_webhook(url="")
-                logger.info("Cleared any existing webhooks.")
-            else:
-                logger.info("No active webhook found to clear.")
-
-            logger.info("Telegram Bot starting in long polling mode...")
-            # IMPORTANT: disable_signals=True will prevent set_wakeup_fd error in sub-threads
-            # stop_signals को एक खाली टपल पर सेट करने से डिफ़ॉल्ट SIGINT/SIGTERM हैंडलिंग रुक जाती है
-            # जो थ्रेड में समस्याएँ पैदा कर सकती है।
-            await application.run_polling(drop_pending_updates=True, stop_signals=())
-            logger.info("Telegram Bot polling stopped.")
-        except Exception as e:
-            logger.error(f"Error in Telegram Bot polling thread: {e}", exc_info=True)
-
-    # run_until_complete is the correct way to run an async function in a sync context
-    new_loop.run_until_complete(_start_polling())
-    new_loop.close() # जब बॉट बंद हो जाए तो लूप को बंद करना ज़रूरी है
+                logger.info("Telegram Bot starting in long polling mode...")
+                # `stop_signals=()` आवश्यक है जब `run_polling` को एक अलग थ्रेड में चलाया जाए
+                # ताकि SIGINT/SIGTERM हैंडलिंग मुख्य थ्रेड के साथ हस्तक्षेप न करे।
+                await application.run_polling(drop_pending_updates=True, stop_signals=())
+                logger.info("Telegram Bot polling stopped.")
+            except Exception as e:
+                logger.error(f"Error in Telegram Bot polling thread: {e}", exc_info=True)
+        
+        # `runner.run()` का उपयोग करके async फ़ंक्शन को चलाएं
+        runner.run(_start_polling_async())
 
 
 # --- Main Execution ---
@@ -605,12 +592,8 @@ if __name__ == "__main__":
     telegram_thread.daemon = True # डेमन थ्रेड ताकि मुख्य प्रोग्राम बंद होने पर यह भी बंद हो जाए
     telegram_thread.start()
     
-    logger.info(f"Flask application starting on port {PORT}...")
-    
-    # Flask Development Server को लोकल टेस्टिंग के लिए चलाएं।
-    # Koyeb पर, Gunicorn इसे होस्ट करेगा, इसलिए यह लाइन Koyeb पर सीधे नहीं चलेगी।
-    # Koyeb के लिए, हम Procfile में Gunicorn कमांड का उपयोग करेंगे जो 'app' ऑब्जेक्ट को ढूंढेगा।
-    try:
-        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-    except Exception as e:
-        logger.critical(f"Flask server failed to start: {e}", exc_info=True)
+    logger.info("Starting Gunicorn via Procfile. Flask app will be served by Gunicorn.")
+    # Koyeb पर, Flask app सीधे 'app.run()' द्वारा नहीं चलेगा।
+    # Gunicorn 'main:app' कमांड का उपयोग करके 'app' ऑब्जेक्ट को उठाएगा।
+    # इसलिए, Flask के डेवलपमेंट सर्वर को यहाँ से हटा दिया गया है।
+    # कोई 'app.run()' यहाँ नहीं होगा।
