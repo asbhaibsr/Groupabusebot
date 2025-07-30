@@ -1,5 +1,5 @@
 import os
-from pymongo import MongoClient # Uncomment this line
+from pymongo import MongoClient
 
 class ProfanityFilter:
     def __init__(self, mongo_uri=None):
@@ -11,10 +11,10 @@ class ProfanityFilter:
         if mongo_uri:
             try:
                 self.client = MongoClient(mongo_uri)
-                # Apne database ka naam yahan dein
-                self.db = self.client.get_database("asfilter") # <-- **APNE DATABASE KA NAAM YAHAN DALEN**
-                # Apne collection ka naam yahan dein
-                self.bad_words_collection = self.db.get_collection("bad_words") # <-- **APNE COLLECTION KA NAAM YAHAN DALEN**
+                # !! IMPORTANT: Apne database ka naam yahan dein (e.g., "mydatabase")
+                self.db = self.client.get_database("asfilter") # <-- APNE DATABASE KA NAAM YAHAN DALEN
+                # !! IMPORTANT: Apne collection ka naam yahan dein (e.g., "profane_words")
+                self.bad_words_collection = self.db.get_collection("bad_words") # <-- APNE COLLECTION KA NAAM YAHAN DALEN
                 self._load_bad_words_from_db()
             except Exception as e:
                 print(f"Error connecting to MongoDB or loading bad words: {e}. Using default list.")
@@ -28,12 +28,14 @@ class ProfanityFilter:
         """
         try:
             # सुनिश्चित करें कि आपके collection में documents में 'word' field है
-            # उदाहरण के लिए, आपके कलेक्शन में डॉक्यूमेंट्स ऐसे हो सकते हैं: {"word": "chutiya"}, {"word": "randi"}
+            # उदाहरण के लिए, आपके कलेक्शन में डॉक्यूमेंट्स ऐसे हो सकते हैं: {"word": "chutiya"}
             cursor = self.bad_words_collection.find({})
             for doc in cursor:
                 if 'word' in doc and isinstance(doc['word'], str):
                     self.bad_words.append(doc['word'].lower())
             print(f"Bad words loaded from MongoDB: {len(self.bad_words)} words.")
+            if not self.bad_words: # If no words loaded from DB, log a warning
+                print("WARNING: No bad words loaded from MongoDB. Is the collection empty or 'word' field missing?")
         except Exception as e:
             print(f"Error loading bad words from MongoDB: {e}. Using default list.")
             self._load_default_bad_words() # Fallback to default if DB load fails
@@ -54,9 +56,8 @@ class ProfanityFilter:
         """
         text_lower = text.lower()
         for word in self.bad_words:
-            # Word boundary check is important for more accurate filtering
-            # Example: "ass" in "class" should not be flagged.
-            # Using simple 'in' for now, but regex can be more robust.
+            # Simple 'in' check. For more robust filtering (e.g., avoiding 'ass' in 'class'),
+            # you might need regular expressions with word boundaries.
             if word in text_lower:
                 return True
         return False
