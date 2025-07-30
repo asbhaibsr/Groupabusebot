@@ -21,7 +21,7 @@ CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin")
-PORT = int(os.getenv("PORT", 8000))
+PORT = int(os.getenv("PORT", 8000)) # Koyeb environment se PORT lega
 
 # Admin User IDs (Jinhe broadcast/stats commands ka access hoga)
 ADMIN_USER_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_USER_IDS", "").split(',') if admin_id]
@@ -132,7 +132,8 @@ async def handle_broadcast_message(update: Update, context: CallbackContext) -> 
                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]]))
     else:
         # Agar admin broadcast mode mein nahi hai, toh regular message handler call karein
-        await handle_message(update, context)
+        # (This case should ideally not happen if /broadcast flow is strict)
+        await handle_message(update, context) # Fallback to general message handling if not in broadcast mode
 
 async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     """Confirms and executes the broadcast to dummy group IDs."""
@@ -363,7 +364,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         other_bots_text = (
             f"<b>🤖 Hamare Dusre Bots:</b>\n\n"
             f"• <a href='https://t.me/asfilter_bot'>@asfilter_bot</a>: Ek movie search bot hai jo aapko movies dhundhne mein madad karega.\n"
-            f"• <a href='https://t.me/askiangelbot'>@askiangelbot</a>: Ye ek baat karne wala bot hai, aap group par isse baat kar sakte hain."
+            f"• <a href='https://tme/askiangelbot'>@askiangelbot</a>: Ye ek baat karne wala bot hai, aap group par isse baat kar sakte hain."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -527,57 +528,71 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             await query.edit_message_text(f"Warning message bhejte samay error hui: {e}")
             logger.error(f"Error warning user {user_id} in chat {chat_id}: {e}")
 
+
 # --- Flask Health Check & Dummy Webhook Endpoint (For Koyeb) ---
 @app.route('/')
 def health_check():
     """Koyeb health checks ke liye simple endpoint."""
     return "Bot is healthy!", 200
 
-# Keep a dummy /telegram endpoint to avoid 404s if Telegram tries to send updates
-# but it won't be actively used by the bot in long polling mode.
+# Dummy /telegram endpoint to avoid 404s if Telegram tries to send updates
+# (even if bot is in long polling mode).
 @app.route('/telegram', methods=['POST'])
 def dummy_telegram_webhook():
     """Dummy endpoint to catch any stray webhook requests."""
-    logger.info("Received a POST request on /telegram, but bot is in long polling mode.")
+    # This endpoint is just for Koyeb's expectation of a web server.
+    # The bot itself runs in long polling mode in a separate thread.
+    logger.info("Received a POST request on /telegram, but bot is in long polling mode. Ignoring.")
     return 'ok', 200
 
-# --- Telegram Bot Polling Function ---
-def run_telegram_bot_polling():
-    """Telegram बॉट को पोलिंग मोड में चलाता है."""
-    # `asyncio.Runner` का उपयोग करें ताकि इवेंट लूप के लाइफसाइकिल को बेहतर ढंग से मैनेज किया जा सके।
-    # यह 'Cannot close a running event loop' जैसी समस्याओं को हल करने में मदद कर सकता है।
-    with asyncio.Runner() as runner:
-        async def _start_polling_async():
-            try:
-                current_webhook = await application.bot.get_webhook_info()
-                if current_webhook.url:
-                    logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-                    await application.bot.set_webhook(url="")
-                    logger.info("Cleared any existing webhooks.")
-                else:
-                    logger.info("No active webhook found to clear.")
+# --- Function to run Flask in a separate thread ---
+def run_flask_app():
+    """Flask application ko ek alag thread mein chalata hai."""
+    logger.info(f"Flask application starting on port {PORT} in a separate thread...")
+    # WARNING: This is a development server. Do not use it in a production deployment.
+    # Koyeb health checks ke liye yeh theek hai, lekin agar aapko high-traffic API chahiye
+    # toh Gunicorn jaisa production-ready WSGI server alag se use karna chahiye.
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-                logger.info("Telegram Bot starting in long polling mode...")
-                # `stop_signals=()` आवश्यक है जब `run_polling` को एक अलग थ्रेड में चलाया जाए
-                # ताकि SIGINT/SIGTERM हैंडलिंग मुख्य थ्रेड के साथ हस्तक्षेप न करे।
-                await application.run_polling(drop_pending_updates=True, stop_signals=())
-                logger.info("Telegram Bot polling stopped.")
-            except Exception as e:
-                logger.error(f"Error in Telegram Bot polling thread: {e}", exc_info=True)
-        
-        # `runner.run()` का उपयोग करके async फ़ंक्शन को चलाएं
-        runner.run(_start_polling_async())
+# --- Telegram Bot Polling Function ---
+async def start_telegram_bot_polling():
+    """Telegram बॉट को पोलिंग मोड में चलाता है."""
+    try:
+        # Puraani webhook clear karein (agar koi hai)
+        current_webhook = await application.bot.get_webhook_info()
+        if current_webhook.url:
+            logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
+            await application.bot.set_webhook(url="")
+            logger.info("Cleared any existing webhooks.")
+        else:
+            logger.info("No active webhook found to clear.")
+
+        logger.info("Telegram Bot starting in long polling mode...")
+        # `stop_signals=()` आवश्यक है जब `run_polling` को एक अलग थ्रेड में चलाया जाए
+        # ताकि SIGINT/SIGTERM हैंडलिंग मुख्य थ्रेड के साथ हस्तक्षेप न करे।
+        await application.run_polling(drop_pending_updates=True, stop_signals=())
+        logger.info("Telegram Bot polling stopped.")
+    except Exception as e:
+        logger.error(f"Error in Telegram Bot polling: {e}", exc_info=True)
 
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Dispatcher को कॉन्फ़िगर करें
+    # Flask app ko ek alag thread mein start karein
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True # Main program band hone par thread bhi band ho jaayega
+    flask_thread.start()
+
+    # Dispatcher ko configure karein
     dispatcher = application
 
     # Command Handlers
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("stats", stats))
     dispatcher.add_handler(CommandHandler("broadcast", broadcast_command))
+    # Jab broadcast command shuru ki jaye, to uske baad ke message ko handle kare
+    dispatcher.add_handler(MessageHandler(filters.COMMAND("broadcast") & filters.ChatType.PRIVATE, handle_broadcast_message))
+
 
     # Message Handlers
     dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
@@ -587,13 +602,20 @@ if __name__ == "__main__":
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
     dispatcher.add_handler(CallbackQueryHandler(view_case_details_forward, pattern=r'^view_case_'))
 
-    # Telegram बॉट को एक अलग थ्रेड में शुरू करें
-    telegram_thread = threading.Thread(target=run_telegram_bot_polling)
-    telegram_thread.daemon = True # डेमन थ्रेड ताकि मुख्य प्रोग्राम बंद होने पर यह भी बंद हो जाए
-    telegram_thread.start()
-    
-    logger.info("Starting Gunicorn via Procfile. Flask app will be served by Gunicorn.")
-    # Koyeb पर, Flask app सीधे 'app.run()' द्वारा नहीं चलेगा।
-    # Gunicorn 'main:app' कमांड का उपयोग करके 'app' ऑब्जेक्ट को उठाएगा।
-    # इसलिए, Flask के डेवलपमेंट सर्वर को यहाँ से हटा दिया गया है।
-    # कोई 'app.run()' यहाँ नहीं होगा।
+    # Telegram बॉट को asyncio.run() ka upyog karke chalaein
+    # Yeh code tab chalega jab Flask thread start ho jaayega.
+    # asyncio.run() naya event loop banayega aur usmein bot ko chalayega.
+    logger.info("Starting Telegram Bot polling in the main thread...")
+    try:
+        asyncio.run(start_telegram_bot_polling())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user (Ctrl+C).")
+    except RuntimeError as e:
+        # Agar 'This event loop is already running' error phir bhi aaye,
+        # to yeh Koyeb ke environment ya Python version ki vajah se ho sakta hai.
+        # Is case mein, threading.Thread(target=asyncio.run, args=(start_telegram_bot_polling(),))
+        # ka prayog karna pad sakta hai, jisse bachne ki hum koshish kar rahe hain.
+        logger.error(f"Runtime Error in main asyncio.run: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in main bot execution: {e}", exc_info=True)
+
