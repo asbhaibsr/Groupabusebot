@@ -30,7 +30,7 @@ ADMIN_USER_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_USER_IDS", "").
 bot_start_time = datetime.now()
 
 # Global variable to store broadcast message
-BROADCAST_MESSAGE = {}
+BROADCAST_MESSAGE = {} # key: user_id, value: telegram.Message object (or None for pending)
 
 # Logging configuration
 logging.basicConfig(
@@ -119,24 +119,14 @@ async def broadcast_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
     
+    # Check if this is a private chat (broadcasts should ideally be initiated from private chat)
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("Broadcast command sirf private chat mein hi shuru ki ja sakti hai.")
+        return
+
     await update.message.reply_text("Kripya apna message bhejein jo sabhi groups par broadcast karna hai.")
     BROADCAST_MESSAGE[update.effective_user.id] = None # Flag to indicate pending broadcast message
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
-
-async def handle_broadcast_message_text(update: Update, context: CallbackContext) -> None:
-    """Handles the message to be broadcasted and asks for confirmation."""
-    user_id = update.effective_user.id
-    # Check if the user is an admin and is in the broadcast initiation state
-    if is_admin(user_id) and user_id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user_id] is None:
-        if update.message.text: # Ensure there's a text message
-            BROADCAST_MESSAGE[user_id] = update.message
-            await update.message.reply_text("Message received. Kya aap ise broadcast karna chahenge?",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]]))
-        else:
-            await update.message.reply_text("Kripya ek text message bhejein broadcast karne ke liye.")
-    else:
-        # If not in broadcast mode, pass to general message handler
-        await handle_message(update, context)
 
 async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     """Confirms and executes the broadcast to dummy group IDs."""
@@ -152,6 +142,8 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     
     if broadcast_msg:
         # Dummy group IDs - REPLACE with actual group IDs where your bot is present
+        # TODO: Dynamically fetch group IDs where the bot is a member if possible,
+        # or maintain a database of groups.
         dummy_group_ids = [
             -1001234567890, # Example: Replace with a real group ID where your bot is present
             # -1009876543210 # Add more if needed
@@ -163,7 +155,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
             try:
                 await context.bot.copy_message(
                     chat_id=chat_id,
-                    from_chat_id=broadcast_msg.chat_id,
+                    from_chat_id=broadcast_msg.chat.id, # Use broadcast_msg.chat.id
                     message_id=broadcast_msg.message_id
                 )
                 success_count += 1
@@ -194,10 +186,10 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
 
     try:
         if profanity_filter.add_bad_word(word_to_add):
-            await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai.", parse_mode='MarkdownV2')
+            await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai\\.", parse_mode='MarkdownV2')
             logger.info(f"Admin {update.effective_user.id} added abuse word: {word_to_add}.")
         else:
-            await update.message.reply_text(f"Shabd '`{word_to_add}`' pehle se hi list mein maujood hai.", parse_mode='MarkdownV2')
+            await update.message.reply_text(f"Shabd '`{word_to_add}`' pehle se hi list mein maujood hai\\.", parse_mode='MarkdownV2')
     except Exception as e:
         await update.message.reply_text(f"Shabd jodte samay error hui: {e}")
         logger.error(f"Error adding abuse word {word_to_add}: {e}")
@@ -227,54 +219,71 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
             await log_to_channel(log_message, parse_mode='HTML')
             logger.info(f"User {member.full_name} ({member.id}) joined group {chat.title} ({chat.id}).")
 
-async def handle_message(update: Update, context: CallbackContext) -> None:
-    """Processes incoming text messages for profanity and takes action."""
-    message_text = update.message.text
+async def handle_all_messages(update: Update, context: CallbackContext) -> None:
+    """
+    Processes incoming text messages, handling broadcast messages first,
+    then checking for profanity.
+    This replaces handle_message and handle_broadcast_message_text.
+    """
     user = update.message.from_user
     chat = update.message.chat
-    
-    # Check for profanity
-    if message_text and profanity_filter.contains_profanity(message_text):
-        try:
-            await context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id)
-            logger.info(f"Deleted abusive message from {user.username or user.full_name} in {chat.title or chat.type}.")
-        except Exception as e:
-            logger.error(f"Error deleting message: {e}. Make sure the bot has 'Delete Messages' admin permission.")
+    message_text = update.message.text
 
-        abuse_no = str(abs(hash(f"{user.id}-{chat.id}-{update.message.message_id}")))[:6]
+    # 1. Handle Broadcast Message (if admin is in broadcast mode)
+    if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
+        if update.message.text: # Ensure there's a text message for broadcast
+            BROADCAST_MESSAGE[user.id] = update.message
+            await update.message.reply_text(
+                "Message received. Kya aap ise broadcast karna chahenge?",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]])
+            )
+        else:
+            await update.message.reply_text("Kripya ek text message bhejein broadcast karne ke liye.")
+        return # Important: Return after handling broadcast to prevent further processing
 
-        notification_message = (
-            f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
-            f"{user.mention_html()} (<code>{user.id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\n\n"
-            f"@{GROUP_ADMIN_USERNAME}, kripya sadasya ke vyavhaar ki samiksha karein.\n\n"
-            f"Case ID: <code>{abuse_no}</code>"
-        )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
-                InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat.id}")
-            ],
-            [
-                InlineKeyboardButton("📄 View Abuse Details", callback_data=f"view_case_{user.id}_{chat.id}_{update.message.message_id}_{abuse_no}")
+    # 2. Handle Profanity Check (for all other non-command text messages)
+    if message_text and not update.message.via_bot: # Avoid processing messages sent by other bots or edited messages from other bots
+        if profanity_filter.contains_profanity(message_text):
+            try:
+                await context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id)
+                logger.info(f"Deleted abusive message from {user.username or user.full_name} in {chat.title or chat.type}.")
+            except Exception as e:
+                logger.error(f"Error deleting message: {e}. Make sure the bot has 'Delete Messages' admin permission.")
+
+            abuse_no = str(abs(hash(f"{user.id}-{chat.id}-{update.message.message_id}")))[:6]
+
+            notification_message = (
+                f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
+                f"{user.mention_html()} (<code>{user.id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\\\n\\\n"
+                f"@{GROUP_ADMIN_USERNAME}, kripya sadasya ke vyavhaar ki samiksha karein.\\\n\\\n"
+                f"Case ID: <code>{abuse_no}</code>"
+            )
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
+                    InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat.id}")
+                ],
+                [
+                    InlineKeyboardButton("📄 View Abuse Details", callback_data=f"view_case_{user.id}_{chat.id}_{update.message.message_id}_{abuse_no}")
+                ]
             ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        sent_notification = await context.bot.send_message(
-            chat_id=chat.id,
-            text=notification_message,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text="<b>Check Case</b> ⬆️",
-            reply_to_message_id=sent_notification.message_id,
-            parse_mode='HTML'
-        )
-        logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {abuse_no}")
+            sent_notification = await context.bot.send_message(
+                chat_id=chat.id,
+                text=notification_message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text="<b>Check Case</b> ⬆️",
+                reply_to_message_id=sent_notification.message_id,
+                parse_mode='HTML'
+            )
+            logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {abuse_no}")
 
 async def view_case_details_forward(update: Update, context: CallbackContext) -> None:
     """Forwards case details to a dedicated channel (admin/group admin only)."""
@@ -337,7 +346,7 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
         case_channel_link = f"https://t.me/c/{str(CASE_CHANNEL_ID).replace('-100', '')}/{sent_case_message.message_id}"
         
         await query.edit_message_text(
-            text=f"✅ Abuse Details successfully forwarded to the case channel.\n\n"
+            text=f"✅ Abuse Details successfully forwarded to the case channel.\\\n\\\n"
                  f"Case Link: <a href='{case_channel_link}'>View Details</a>",
             parse_mode='HTML',
             disable_web_page_preview=True
@@ -614,11 +623,10 @@ if __name__ == "__main__":
     dispatcher.add_handler(CommandHandler("addabuse", add_abuse_word)) # New command handler
 
     # Message Handlers
-    # filters.COMMAND("broadcast") ko bina parenthesis ke use karein
-    # Isse yeh सुनिश्चित होगा ki /broadcast command ke baad aane wale text messages ko handle_broadcast_message_text function handle kare.
-    dispatcher.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.COMMAND("broadcast"), handle_broadcast_message_text))
+    # filters.TEXT & ~filters.COMMAND: Yeh sabhi non-command text messages ko handle karega.
+    # handle_all_messages function phir check karega ki kya yeh broadcast message hai ya profanity.
+    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
     dispatcher.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Callback Query Handlers (buttons ke liye)
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
