@@ -43,9 +43,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- Telegram Bot Setup ---
-# 'application' variable को अब यहां declare नहीं करना है (जैसे application = None),
+# 'application' variable को यहां declare नहीं करना है (जैसे application = None),
 # इसे सीधे __main__ ब्लॉक में initialize किया जाएगा।
 # यह सुनिश्चित करता है कि global declaration से पहले कोई assignment न हो।
+application = None # इसे `if __name__ == "__main__":` ब्लॉक में असाइन करेंगे
 
 # Profanity Filter को initialize करें
 profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -445,11 +446,13 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
                 action_text = f"User <b>{user_id}</b> ko <b>6 mahine</b> ke liye mute kiya gaya hai."
             else:
                 action_text = f"User <b>{user_id}</b> ko <b>{duration_seconds} seconds</b> ke liye mute kiya gaya hai."
+
             await query.edit_message_text(action_text, parse_mode='HTML')
             logger.info(f"User {user_id} muted in chat {chat_id} by admin {query.from_user.id}.")
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
             logger.error(f"Error muting user {user_id} in chat {chat_id}: {e}")
+
     elif data.startswith("ban_"):
         parts = data.split('_')
         user_id = int(parts[1])
@@ -461,6 +464,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         except Exception as e:
             await query.edit_message_text(f"Ban karte samay error hui: {e}")
             logger.error(f"Error banning user {user_id} in chat {chat_id}: {e}")
+
     elif data.startswith("kick_"):
         parts = data.split('_')
         user_id = int(parts[1])
@@ -507,6 +511,23 @@ def run_flask_app():
     # ताकि दो Flask इंस्टेंस न चलें, खासकर जब debug=False हो।
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
+# --- Async function to clear webhook ---
+async def clear_telegram_webhook(app_instance: Application):
+    """
+    Telegram bot ke liye kisi bhi active webhook ko clear karta hai.
+    Yeh function async context mein chalne ke liye design kiya gaya hai.
+    """
+    try:
+        current_webhook = await app_instance.bot.get_webhook_info()
+        if current_webhook.url:
+            logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
+            await app_instance.bot.delete_webhook()
+            logger.info("Cleared any existing webhooks.")
+        else:
+            logger.info("No active webhook found to clear.")
+    except Exception as e:
+        logger.error(f"Error while clearing webhook: {e}", exc_info=True)
+
 # --- Main Execution ---
 if __name__ == "__main__":
     # Flask app को एक अलग थ्रेड में स्टार्ट करें
@@ -538,17 +559,10 @@ if __name__ == "__main__":
     # Telegram बॉट को सीधे application.run_polling() से चलाएं
     logger.info("Starting Telegram Bot in long polling mode...")
     try:
-        # Puraani webhook clear karein (agar koi hai)
-        # ध्यान दें: ये अब asynchronous call नहीं हैं, लेकिन application.run_polling()
-        # अपने आप ही asyncio event loop को शुरू कर देगा और handle करेगा।
-        current_webhook = application.bot.get_webhook_info()
-        if current_webhook.url:
-            logger.info(f"Existing webhook found: {current_webhook.url}. Clearing it...")
-            application.bot.delete_webhook()
-            logger.info("Cleared any existing webhooks.")
-        else:
-            logger.info("No active webhook found to clear.")
+        # Webhook clear करने के लिए एक अलग asyncio event loop का उपयोग करें
+        asyncio.run(clear_telegram_webhook(application))
 
+        # अब मुख्य बॉट पोलिंग शुरू करें
         application.run_polling(drop_pending_updates=True, stop_signals=())
         logger.info("Telegram Bot polling stopped.")
     except KeyboardInterrupt:
