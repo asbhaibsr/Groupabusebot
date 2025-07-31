@@ -1,6 +1,7 @@
 import os
 from pymongo import MongoClient
 import logging
+import re # Added for better word boundary matching
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,11 @@ class ProfanityFilter:
         if not text: # Handle empty text
             return False
         text_lower = text.lower()
+        
+        # Using regex with word boundaries for more accurate matching
+        # \b ensures full word match.
         for word in self.bad_words:
-            # Check for whole words to avoid false positives (e.g., "scunthorpe")
-            # Using regex with word boundaries might be more robust for production
-            if f" {word} " in f" {text_lower} " or text_lower.startswith(f"{word} ") or text_lower.endswith(f" {word}") or text_lower == word:
+            if re.search(r'\b' + re.escape(word) + r'\b', text_lower):
                 return True
         return False
 
@@ -73,18 +75,18 @@ class ProfanityFilter:
 
         if self.bad_words_collection:
             try:
-                # Insert the word, upsert=True is implicitly handled by unique index and update_one
-                # Or use insert_one and handle DuplicateKeyError
+                # Use insert_one and catch DuplicateKeyError for explicit handling
                 self.bad_words_collection.insert_one({"word": word_lower})
                 self.bad_words.append(word_lower) # Add to in-memory list after successful DB insert
                 logger.info(f"Added '{word_lower}' to MongoDB and in-memory list.")
                 return True
             except Exception as e:
-                if "duplicate key error" in str(e):
+                # Check for duplicate key error specifically
+                if "duplicate key error" in str(e).lower() or "e11000 duplicate key error" in str(e).lower():
                     logger.info(f"Word '{word_lower}' already exists in MongoDB (duplicate key error).")
                     if word_lower not in self.bad_words: # Ensure it's in memory even if DB had it
                         self.bad_words.append(word_lower)
-                    return False
+                    return False # Return False as it was already present
                 else:
                     logger.error(f"Error adding word '{word_lower}' to MongoDB: {e}")
                     return False
