@@ -14,8 +14,8 @@ class ProfanityFilter:
         if mongo_uri:
             try:
                 self.client = MongoClient(mongo_uri)
-                self.db = self.client.get_database("asfilter") # <-- APNE DATABASE KA NAAM YAHAN DALEN
-                self.bad_words_collection = self.db.get_collection("bad_words") # <-- APNE COLLECTION KA NAAM YAHAN DALEN
+                self.db = self.client.get_database("asfilter")
+                self.bad_words_collection = self.db.get_collection("bad_words")
                 self._load_bad_words_from_db()
             except Exception as e:
                 logger.error(f"Error connecting to MongoDB or loading bad words: {e}. Using default list.")
@@ -26,7 +26,6 @@ class ProfanityFilter:
 
     def _load_bad_words_from_db(self):
         try:
-            # MongoDB se words load karne se pehle current list clear karein
             self.bad_words = [] 
             cursor = self.bad_words_collection.find({})
             for doc in cursor:
@@ -61,10 +60,9 @@ class ProfanityFilter:
 
         if self.bad_words_collection:
             try:
-                # Check if word already exists in DB to prevent duplicates
                 if self.bad_words_collection.count_documents({"word": word_lower}) == 0:
                     self.bad_words_collection.insert_one({"word": word_lower})
-                    self.bad_words.append(word_lower) # Add to in-memory list
+                    self.bad_words.append(word_lower)
                     logger.info(f"Added '{word_lower}' to MongoDB and in-memory list.")
                     return True
                 else:
@@ -100,4 +98,3 @@ if __name__ == "__main__":
         print(f"'{new_word}' added again (should be False).")
     else:
         print(f"'{new_word}' already exists.")
-
