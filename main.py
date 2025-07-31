@@ -5,7 +5,8 @@ import threading
 import asyncio
 import logging
 from pymongo import MongoClient
-from telegram.error import BadRequest, TelegramError # Import specific Telegram errors
+# 'Forbidden' ko yahan import karna zaroori hai agar aap ise catch kar rahe hain.
+from telegram.error import BadRequest, Forbidden, TelegramError 
 
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, WebAppInfo
@@ -18,7 +19,7 @@ from telegram.ext import (
 # सुनिश्चित करें कि profanity_filter.py फाइल आपके प्रोजेक्ट में मौजूद है
 from profanity_filter import ProfanityFilter
 
-# --- Configuration (Hardcoded as per request, but MONGO_DB_URI & TELEGRAM_BOT_TOKEN remain env vars for security) ---
+# --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 LOG_CHANNEL_ID = -1002352329534 # Your specified Log Channel ID
 CASE_CHANNEL_ID = -1002717243409 # Your specified Case Channel ID
@@ -29,7 +30,7 @@ GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin") # Default to '
 # Admin User IDs (आपका दिया गया ID)
 ADMIN_USER_IDS = [7315805581] 
 
-# Bot start time record करे
+# Bot start time record
 bot_start_time = datetime.now()
 
 # Global variable to store broadcast message
@@ -407,48 +408,60 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
             
             case_id_value = str(int(datetime.now().timestamp() * 1000))
 
-            # --- Step 1: Send the user and group details to the case channel ---
-            details_message_text = (
-                f"🚨 <b>नया उल्लंघन (Violation)</b> 🚨\n\n"
-                f"<b>📍 ग्रुप:</b> {chat.title} (<code>{chat.id}</code>)\n"
-                f"<b>👤 यूज़र:</b> {user.mention_html()} (<code>{user.id}</code>)\n"
-                f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
-                f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
-                f"<b>🆔 केस ID:</b> <code>{case_id_value}</code>\n\n"
-                f"<b>➡️ मूल मैसेज:</b>" # This line is a header for the message that will be replied below
-            )
-
+            sent_details_msg = None
             forwarded_message = None
             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback if direct link fails initially
 
             try:
-                # Send the details message to the case channel
+                # 1. Send the user and group details to the case channel
+                details_message_text = (
+                    f"🚨 <b>नया उल्लंघन (Violation)</b> 🚨\n\n"
+                    f"<b>📍 ग्रुप:</b> {chat.title} (<code>{chat.id}</code>)\n"
+                    f"<b>👤 यूज़र:</b> {user.mention_html()} (<code>{user.id}</code>)\n"
+                    f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
+                    f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+                    f"<b>🆔 केस ID:</b> <code>{case_id_value}</code>\n\n"
+                    f"<b>➡️ मूल मैसेज:</b>" # This line is a header for the message that will be replied below
+                )
                 sent_details_msg = await context.bot.send_message(
                     chat_id=CASE_CHANNEL_ID,
                     text=details_message_text,
                     parse_mode='HTML'
                 )
+                logger.info(f"Details message sent to case channel {CASE_CHANNEL_ID}. Message ID: {sent_details_msg.message_id}")
                 
-                # --- Step 2: Forward the original message to the case channel, replying to the details message ---
-                forwarded_message = await context.bot.forward_message(
+                # 2. Copy the original message to the case channel, replying to the details message
+                # copy_message supports reply_to_message_id
+                forwarded_message = await context.bot.copy_message(
                     chat_id=CASE_CHANNEL_ID,
                     from_chat_id=chat.id,
                     message_id=original_message_id,
-                    reply_to_message_id=sent_details_msg.message_id # Reply to the details message
+                    reply_to_message_id=sent_details_msg.message_id # This will now work correctly
                 )
                 
-                # --- Step 3: Construct the direct link to the forwarded message in the case channel ---
-                # This format works for both public and private channels by removing '-100' prefix
-                # from the chat ID and combining it with the message ID.
-                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                case_detail_url = f"https://t.me/c/{channel_link_id}/{forwarded_message.message_id}"
-                
-                logger.info(f"Original abusive message forwarded to case channel. Generated URL: {case_detail_url}")
-            except TelegramError as e:
-                logger.error(f"Error forwarding message to case channel or sending details: {e}. Ensure bot is admin in case channel and has 'Post Messages' permission.")
-                # If forwarding fails, the fallback URL remains the channel's general link.
+                # 3. Construct the direct link to the copied message in the case channel
+                if forwarded_message:
+                    channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                    case_detail_url = f"https://t.me/c/{channel_link_id}/{forwarded_message.message_id}"
+                    logger.info(f"Original abusive message copied successfully. Generated URL: {case_detail_url}")
+                else:
+                    logger.warning("Copied message object is None after copy_message call. Falling back to default channel URL.")
+                    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback if copied_message is None
+
+            except Forbidden as e:
+                logger.error(f"TelegramError (Forbidden) in handle_all_messages: {e}. Bot does not have permission to send messages to channel {CASE_CHANNEL_ID}. Please check 'Post Messages' admin permission.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
+            except BadRequest as e:
+                logger.error(f"TelegramError (BadRequest) in handle_all_messages: {e}. This might be due to an invalid CASE_CHANNEL_ID or message_id. Please verify.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
+            except TelegramError as e: # Catch all general Telegram API errors
+                logger.error(f"General TelegramError in handle_all_messages: {e}. Ensure bot is admin in case channel ({CASE_CHANNEL_ID}) and has 'Post Messages' permission, and bot token is valid.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
+            except Exception as e:
+                logger.error(f"An unexpected error occurred during message processing in handle_all_messages: {e}")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # General fallback
             
-            # --- Step 4: Log the incident in MongoDB ---
+            # --- 4. Log the incident in MongoDB ---
             if db is not None and db.incidents is not None:
                 try:
                     db.incidents.insert_one({
@@ -468,7 +481,7 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 except Exception as e:
                     logger.error(f"Error logging incident {case_id_value} to DB: {e}")
 
-            # --- Step 5: Send notification to the original group with the direct link ---
+            # --- 5. Send notification to the original group with the direct link ---
             notification_message = (
                 f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
                 f"{user.mention_html()} (<code>{user.id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\n\n"
@@ -749,6 +762,10 @@ def run_flask_app():
 def run_bot():
     """Telegram bot को चलाने के लिए मुख्य फंक्शन"""
     global application
+    if TELEGRAM_BOT_TOKEN is None:
+        logger.critical("TELEGRAM_BOT_TOKEN environment variable not set. Exiting bot application.")
+        return # Bot will not run if token is missing
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Handlers जोड़ें
@@ -768,9 +785,20 @@ def run_bot():
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
 
     logger.info("Starting Telegram Bot in long polling mode...")
-    application.run_polling(drop_pending_updates=True)
+    try:
+        application.run_polling(drop_pending_updates=True)
+    except TelegramError as e:
+        logger.critical(f"Telegram Bot encountered a critical error: {e}")
+        # Agar bot token invalid hai, to yahin catch ho jaayega
+        if "Bad Request: unauthorized" in str(e):
+            logger.critical("ERROR: Your bot token might be invalid or revoked. Please check TELEGRAM_BOT_TOKEN.")
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during bot polling: {e}")
+
 
 if __name__ == "__main__":
+    # Ensure MONGO_DB_URI is available when calling init_mongodb
+    # MONGO_DB_URI = os.getenv("MONGO_DB_URI") # This line is now redundant as MONGO_DB_URI is global
     init_mongodb() # Initialize MongoDB before starting bot and flask
 
     # Flask को अलग थ्रेड में चलाएं
