@@ -47,14 +47,15 @@ application = None
 mongo_client = None
 db = None # MongoDB database instance
 
-# Profanity Filter को initialize करें
-profanity_filter = None # Initialize after MongoDB is connected
+# Profanity Filter को initialize करें (अब इसे init_mongodb में सही तरीके से सेट किया जाएगा)
+profanity_filter = None 
 
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
     if not MONGO_DB_URI:
-        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB.")
+        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
+        profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
         return
 
     try:
@@ -69,10 +70,11 @@ def init_mongodb():
         db.users.create_index("user_id", unique=True)
         logger.info("MongoDB 'users' collection unique index created/verified.")
 
+        # Initialize profanity filter AFTER DB connection is established
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
-        logger.info("MongoDB connection and collections initialized successfully.")
+        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}")
+        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
         # If MongoDB fails, profanity_filter will use default list
         profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
@@ -97,47 +99,65 @@ async def log_to_channel(text: str, parse_mode: str = None) -> None:
 
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
-    bot_info = await context.bot.get_me() # Await the coroutine
-    bot_name = bot_info.first_name
-    welcome_message = (
-        f"👋 <b>Namaste {user.first_name}!</b>\n\n"
-        f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
-        f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun, "
-        f"gaaliyon wale messages ko delete karta hun aur zaroorat padne par warning bhi deta hun.\n\n"
-        f"<b>Mere features:</b>\n"
-        f"• Gaali detection aur deletion\n"
-        f"• User warnings aur actions (Mute, Ban, Kick)\n"
-        f"• Incident logging\n\n"
-        f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
-    )
-    keyboard = [
-        [InlineKeyboardButton("❓ Help", callback_data="help_menu")],
-        [InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
-        [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")],
-        [InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-        [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        text=welcome_message,
-        reply_markup=reply_markup,
-        parse_mode='HTML'
-    )
-    logger.info(f"User {user.first_name} ({user.id}) started the bot.")
+    chat = update.message.chat # Get chat object
 
-    # Store user info in DB if not already present
-    if db and db.users:
-        try:
-            db.users.update_one(
-                {"user_id": user.id},
-                {"$set": {"first_name": user.first_name, "username": user.username, "last_interaction": datetime.now()}},
-                upsert=True
-            )
-            logger.info(f"User {user.id} data updated in DB.")
-        except Exception as e:
-            logger.error(f"Error saving user {user.id} to DB: {e}")
+    # Log only if in private chat
+    if chat.type == 'private':
+        bot_info = await context.bot.get_me() # Await the coroutine
+        bot_name = bot_info.first_name
+        welcome_message = (
+            f"👋 <b>Namaste {user.first_name}!</b>\n\n"
+            f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
+            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun, "
+            f"gaaliyon wale messages ko delete karta hun aur zaroorat padne par warning bhi deta hun.\n\n"
+            f"<b>Mere features:</b>\n"
+            f"• Gaali detection aur deletion\n"
+            f"• User warnings aur actions (Mute, Ban, Kick)\n"
+            f"• Incident logging\n\n"
+            f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
+        )
+        keyboard = [
+            [InlineKeyboardButton("❓ Help", callback_data="help_menu")],
+            [InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
+            [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")],
+            [InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
+            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            text=welcome_message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        logger.info(f"User {user.first_name} ({user.id}) started the bot in private chat.")
+
+        # Store user info in DB if not already present, only for private chats
+        if db and db.users:
+            try:
+                db.users.update_one(
+                    {"user_id": user.id},
+                    {"$set": {"first_name": user.first_name, "username": user.username, "last_interaction": datetime.now()}},
+                    upsert=True
+                )
+                logger.info(f"User {user.id} data updated/added in DB (from start command).")
+            except Exception as e:
+                logger.error(f"Error saving user {user.id} to DB (from start command): {e}")
+        else:
+            logger.warning("MongoDB 'users' collection not available. User data not saved (from start command).")
+        
+        # Log to channel when user starts bot in private
+        log_message = (
+            f"<b>✨ New User Started Bot:</b>\n"
+            f"User: {user.mention_html()} (<code>{user.id}</code>)\n"
+            f"Username: @{user.username if user.username else 'N/A'}\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        )
+        await log_to_channel(log_message, parse_mode='HTML')
+
     else:
-        logger.warning("MongoDB 'users' collection not available. User data not saved.")
+        # If /start is used in a group, just acknowledge or ignore
+        await update.message.reply_text("Hello! Main ek moderation bot hun. Aap mujhe apne group mein shamil kar sakte hain.")
+
 
 async def stats(update: Update, context: CallbackContext) -> None:
     if not is_admin(update.effective_user.id):
@@ -152,10 +172,12 @@ async def stats(update: Update, context: CallbackContext) -> None:
             total_users = db.users.count_documents({})
         except Exception as e:
             logger.error(f"Error fetching stats from DB: {e}")
+            await update.message.reply_text(f"Stats fetch karte samay error hui: {e}")
+            return
 
     stats_message = (
         f"📊 <b>Bot Status:</b>\n\n"
-        f"• Total Unique Users (via /start): {total_users}\n"
+        f"• Total Unique Users (via /start in private chat): {total_users}\n"
         f"• Total Groups Managed: {total_groups}\n"
         f"• Total Incidents Logged (Approx): 500+ (dummy)\n" # This would require a dedicated incident logging in DB
         f"• Uptime: {str(datetime.now() - bot_start_time).split('.')[0]} \n"
@@ -193,6 +215,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
 
         target_groups = []
         try:
+            # Fetch all chat_ids from the 'groups' collection
             for doc in db.groups.find({}, {"chat_id": 1}): # Fetch only chat_id
                 target_groups.append(doc['chat_id'])
             logger.info(f"Fetched {len(target_groups)} group IDs from DB for broadcast.")
@@ -208,18 +231,24 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
 
         success_count = 0
         fail_count = 0
+        # Send broadcast message concurrently using asyncio.gather for better performance
+        tasks = []
         for chat_id in target_groups:
-            try:
-                await context.bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=broadcast_msg.chat.id,
-                    message_id=broadcast_msg.message_id
-                )
-                success_count += 1
-                await asyncio.sleep(0.1) # Avoid flooding Telegram API
-            except Exception as e:
+            tasks.append(context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=broadcast_msg.chat.id,
+                message_id=broadcast_msg.message_id
+            ))
+        
+        # Execute all tasks and collect results
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
                 fail_count += 1
-                logger.error(f"Failed to broadcast to {chat_id}: {e}")
+                logger.error(f"Failed to broadcast: {result}")
+            else:
+                success_count += 1
 
         await query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
@@ -238,7 +267,7 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
     if not word_to_add:
         await update.message.reply_text("Kripya ek valid shabd dein.")
         return
-    if profanity_filter:
+    if profanity_filter: # Check if filter is initialized
         try:
             if profanity_filter.add_bad_word(word_to_add):
                 await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai\\.", parse_mode='MarkdownV2')
@@ -256,8 +285,9 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
 async def welcome_new_member(update: Update, context: CallbackContext) -> None:
     new_members = update.message.new_chat_members
     chat = update.message.chat
+    bot_info = await context.bot.get_me() # Await the coroutine
+
     for member in new_members:
-        bot_info = await context.bot.get_me() # Await the coroutine
         if member.id == bot_info.id:
             # Bot group mein add hua hai
             log_message = (
@@ -265,7 +295,8 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
                 f"Group Name: <code>{chat.title}</code>\n"
                 f"Group ID: <code>{chat.id}</code>\n"
                 f"Members: {await chat.get_member_count()}\n"
-                f"Added by: {update.message.from_user.mention_html()} (<code>{update.message.from_user.id}</code>)"
+                f"Added by: {update.message.from_user.mention_html()} (<code>{update.message.from_user.id}</code>)\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
             await log_to_channel(log_message, parse_mode='HTML')
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {update.message.from_user.id}.")
@@ -278,11 +309,11 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
                         {"$set": {"title": chat.title, "type": chat.type, "last_active": datetime.now()}},
                         upsert=True
                     )
-                    logger.info(f"Group {chat.id} data updated in DB.")
+                    logger.info(f"Group {chat.id} data updated/added in DB (from bot joining).")
                 except Exception as e:
-                    logger.error(f"Error saving group {chat.id} to DB: {e}")
+                    logger.error(f"Error saving group {chat.id} to DB (from bot joining): {e}")
             else:
-                logger.warning("MongoDB 'groups' collection not available. Group data not saved.")
+                logger.warning("MongoDB 'groups' collection not available. Group data not saved (from bot joining).")
 
             # Bot admin status check and potential initial setup messages
             try:
@@ -300,16 +331,17 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
-
         else:
-            # Naya user group mein add hua hai
+            # Naya user group mein add hua hai (Log this event)
             log_message = (
-                f"<b>➕ Naya User Joined:</b>\n"
+                f"<b>➕ Naya User Joined Group:</b>\n"
                 f"User: {member.mention_html()} (<code>{member.id}</code>)\n"
-                f"Group: <code>{chat.title}</code> (<code>{chat.id}</code>)"
+                f"Group: <code>{chat.title}</code> (<code>{chat.id}</code>)\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
             await log_to_channel(log_message, parse_mode='HTML')
             logger.info(f"User {member.full_name} ({member.id}) joined group {chat.title} ({chat.id}).")
+
 
 async def handle_all_messages(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
@@ -329,8 +361,9 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
         return # Stop further processing for broadcast input
 
     # Process messages for profanity only in groups/supergroups
-    if chat.type in ['group', 'supergroup'] and message_text and not update.message.via_bot and profanity_filter:
-        if profanity_filter.contains_profanity(message_text):
+    # Ensure profanity_filter is initialized before use
+    if chat.type in ['group', 'supergroup'] and message_text and not update.message.via_bot:
+        if profanity_filter and profanity_filter.contains_profanity(message_text):
             try:
                 await context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id)
                 logger.info(f"Deleted abusive message from {user.username or user.full_name} ({user.id}) in {chat.title} ({chat.id}).")
@@ -373,9 +406,9 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {abuse_no}. Notification sent.")
             except Exception as e:
                 logger.error(f"Error sending profanity notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
-    elif not profanity_filter:
-        logger.warning("Profanity filter not initialized. Skipping profanity check.")
-
+        elif not profanity_filter:
+            logger.warning("Profanity filter not initialized. Skipping profanity check in group.")
+    # No action if not in group/supergroup or no profanity detected
 
 async def view_case_details_forward(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -731,4 +764,3 @@ if __name__ == "__main__":
 
     # Telegram बॉट को मुख्य थ्रेड में चलाएं
     run_bot()
-
