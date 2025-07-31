@@ -5,7 +5,9 @@ import threading
 import asyncio
 import logging
 from pymongo import MongoClient
-from telegram.error import BadRequest, Forbidden, Unauthorized, TelegramError # Import specific Telegram errors
+# 'Unauthorized' ko hata diya gaya hai taaki older PTB versions ya specific environment issues avoid ho sakein.
+# Iski jagah general 'TelegramError' ya 'Exception' handle hoga.
+from telegram.error import BadRequest, Forbidden, TelegramError 
 
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, WebAppInfo
@@ -55,6 +57,7 @@ profanity_filter = None
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
+    MONGO_DB_URI = os.getenv("MONGO_DB_URI") # MONGO_DB_URI ko yahan bhi get karna hoga agar upar global mein nahi liya
     if MONGO_DB_URI is None:
         logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
@@ -459,11 +462,8 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
             except BadRequest as e:
                 logger.error(f"TelegramError (BadRequest) forwarding message to case channel: {e}. This might be due to an invalid CASE_CHANNEL_ID or message_id. Please verify.")
                 case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
-            except Unauthorized as e:
-                logger.error(f"TelegramError (Unauthorized) forwarding message to case channel: {e}. Bot token might be invalid or revoked.")
-                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
-            except TelegramError as e:
-                logger.error(f"General TelegramError forwarding message: {e}. Ensure bot is admin in case channel ({CASE_CHANNEL_ID}) and has 'Post Messages' permission.")
+            except TelegramError as e: # Catch all general Telegram API errors, including Unauthorized
+                logger.error(f"General TelegramError forwarding message: {e}. Ensure bot is admin in case channel ({CASE_CHANNEL_ID}) and has 'Post Messages' permission, and bot token is valid.")
                 case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback if forwarded_message is None
             except Exception as e:
                 logger.error(f"An unexpected error occurred during message forwarding: {e}")
@@ -746,6 +746,10 @@ def run_flask_app():
 def run_bot():
     """Telegram bot को चलाने के लिए मुख्य फंक्शन"""
     global application
+    if TELEGRAM_BOT_TOKEN is None:
+        logger.critical("TELEGRAM_BOT_TOKEN environment variable not set. Exiting bot application.")
+        return # Bot will not run if token is missing
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Handlers जोड़ें
@@ -765,9 +769,20 @@ def run_bot():
     dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
 
     logger.info("Starting Telegram Bot in long polling mode...")
-    application.run_polling(drop_pending_updates=True)
+    try:
+        application.run_polling(drop_pending_updates=True)
+    except TelegramError as e:
+        logger.critical(f"Telegram Bot encountered a critical error: {e}")
+        # Agar bot token invalid hai, to yahin catch ho jaayega
+        if "Bad Request: unauthorized" in str(e):
+            logger.critical("ERROR: Your bot token might be invalid or revoked. Please check TELEGRAM_BOT_TOKEN.")
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during bot polling: {e}")
+
 
 if __name__ == "__main__":
+    # Ensure MONGO_DB_URI is available when calling init_mongodb
+    MONGO_DB_URI = os.getenv("MONGO_DB_URI")
     init_mongodb() # Initialize MongoDB before starting bot and flask
 
     # Flask को अलग थ्रेड में चलाएं
