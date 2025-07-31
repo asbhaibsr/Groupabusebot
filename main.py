@@ -61,17 +61,20 @@ def init_mongodb():
         db = mongo_client.get_database("asfilter")
 
         # Create collections if they don't exist and ensure indexes
-        if "groups" not in db.list_collections_names():
+        # Corrected: Use db.list_collection_names() directly on the database object
+        collection_names = db.list_collection_names()
+
+        if "groups" not in collection_names:
             db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
         logger.info("MongoDB 'groups' collection unique index created/verified.")
 
-        if "users" not in db.list_collections_names():
+        if "users" not in collection_names:
             db.create_collection("users")
         db.users.create_index("user_id", unique=True)
         logger.info("MongoDB 'users' collection unique index created/verified.")
 
-        if "incidents" not in db.list_collections_names():
+        if "incidents" not in collection_names:
             db.create_collection("incidents")
         db.incidents.create_index("case_id", unique=True)
         logger.info("MongoDB 'incidents' collection unique index created/verified.")
@@ -271,7 +274,9 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         fail_count = 0
 
         # Send an initial message to the user confirming broadcast started
-        await query.edit_message_text(f"Broadcast shuru ho raha hai. Sabhi groups mein bheja ja raha hai...")
+        # The query.message.reply_text() is used here to send a new message,
+        # not edit the original button message.
+        await query.message.reply_text(f"Broadcast shuru ho raha hai. Sabhi groups mein bheja ja raha hai...")
 
         for chat_id in target_groups:
             try:
@@ -286,6 +291,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                 fail_count += 1
                 logger.error(f"Failed to broadcast to {chat_id}: {e}")
 
+        # Final message about broadcast completion
         await query.message.reply_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
     else:
@@ -406,7 +412,7 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback URL
 
             try:
-                # --- 2. Case Channel Mein Detail Message Bhejenge (Gaali ke Spoiler ke Saath) ---
+                # --- 2. Case Channel Mein Detail Message Bhejेंगे (Gaali ke Spoiler ke Saath) ---
                 details_message_text = (
                     f"🚨 <b>नया उल्लंघन (Violation)</b> 🚨\n\n"
                     f"<b>📍 ग्रुप:</b> {chat.title} (<code>{chat.id}</code>)\n"
@@ -525,9 +531,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
     elif query.message.chat.type == 'private' and not is_admin(user_id):
         # Allow bot admins to use broadcast confirm in private chat
         # This condition already handles non-bot-admins in private chat for other buttons
-        await query.edit_message_text("Aapke paas is action ko karne ki permission nahi hai.")
-        logger.warning(f"Non-bot-admin user {user_id} tried to use private chat admin button.")
-        return
+        # For 'confirm_broadcast' specifically, this check is handled within that function.
+        # For other private chat buttons, it's generally fine for non-admins to click unless specific logic is needed.
+        # However, for the provided buttons (help, other bots, donate), no admin check is strictly needed here.
+        pass # Keep this for now, if you add admin-only buttons in private chat later, re-evaluate.
 
 
     # --- Handle specific callbacks ---
@@ -782,7 +789,7 @@ def run_bot():
         # This handles admin's broadcast message input in private chat
         # Modified to accept all message types for broadcast
         application.add_handler(MessageHandler(
-            (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.DOCUMENT) & 
+            (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & # Corrected filters.DOCUMENT to filters.Document.ALL
             filters.ChatType.PRIVATE & 
             filters.User(user_id=ADMIN_USER_IDS), 
             handle_all_messages
