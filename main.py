@@ -109,6 +109,24 @@ async def log_to_channel(text: str, parse_mode: str = None) -> None:
     else:
         logger.warning("Application not initialized or LOG_CHANNEL_ID is not set, cannot log to channel.")
 
+async def notify_all_admins(chat_id: int, message: str, context: CallbackContext, reply_markup=None):
+    """Notifies all admins in a group about an incident."""
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+        for admin in admins:
+            if not admin.user.is_bot:  # Don't notify bot admins
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin.user.id,
+                        text=message,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Could not send admin notification to {admin.user.id}: {e}")
+    except Exception as e:
+        logger.error(f"Error getting admins for chat {chat_id}: {e}")
+
 # --- Bot Commands Handlers ---
 async def start(update: Update, context: CallbackContext) -> None:
     """Handles the /start command."""
@@ -232,9 +250,33 @@ async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type != 'private':
         await update.message.reply_text("Broadcast command sirf private chat mein hi shuru ki ja sakti hai.")
         return
-    await update.message.reply_text("Kripya apna message bhejein jo sabhi groups aur users par broadcast karna hai.")
-    BROADCAST_MESSAGE[update.effective_user.id] = None # Mark as waiting for message
+    
+    # Ask for the broadcast message
+    await update.message.reply_text("📢 Broadcast shuru karne ke liye, kripya apna message bhejein:")
+    BROADCAST_MESSAGE[update.effective_user.id] = "waiting_for_message"  # Mark as waiting for message
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
+
+async def handle_broadcast_message(update: Update, context: CallbackContext) -> None:
+    """Handles the broadcast message input from admin."""
+    user = update.message.from_user
+    
+    if not is_admin(user.id) or BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
+        return  # Not in broadcast mode
+    
+    # Store the message to be broadcasted
+    BROADCAST_MESSAGE[user.id] = update.message
+    
+    # Ask for confirmation
+    keyboard = [
+        [InlineKeyboardButton("✅ Yes, Broadcast Now", callback_data="confirm_broadcast")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
+        reply_markup=reply_markup
+    )
 
 async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     """Confirms and executes the broadcast."""
@@ -247,7 +289,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         return
 
     broadcast_msg = BROADCAST_MESSAGE.pop(user_id)
-    if broadcast_msg:
+    if broadcast_msg and broadcast_msg != "waiting_for_message":
         if db is None:
             await query.edit_message_text("Broadcast ke liye MongoDB collections available nahi hai. Broadcast nahi kar sakte.")
             logger.error("MongoDB collections not available for broadcast.")
@@ -290,7 +332,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         success_count = 0
         fail_count = 0
 
-        await query.message.reply_text(f"Broadcast shuru ho raha hai. Sabhi groups aur users mein bheja ja raha hai... (Total targets: {len(target_chats)})")
+        await query.edit_message_text(f"📢 Broadcast shuru ho raha hai...\n\nTotal targets: {len(target_chats)}")
 
         for chat_id in target_chats:
             try:
@@ -315,11 +357,21 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                 logger.error(f"Failed to broadcast to {chat_id} (Unknown error: {e}).")
                 fail_count += 1
 
-        await query.message.reply_text(f"Broadcast complete! Successfully sent to {success_count} chats. Failed: {fail_count}.")
+        await query.message.reply_text(f"✅ Broadcast Complete!\n\nSuccessfully sent to: {success_count} chats\nFailed to send: {fail_count}")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
     else:
         await query.edit_message_text("Broadcast message not found.")
 
+async def cancel_broadcast(update: Update, context: CallbackContext) -> None:
+    """Cancels the broadcast process."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id in BROADCAST_MESSAGE:
+        BROADCAST_MESSAGE.pop(user_id)
+    
+    await query.edit_message_text("❌ Broadcast cancel kar diya gaya hai.")
 
 async def add_abuse_word(update: Update, context: CallbackContext) -> None:
     """Allows bot admins to add custom abuse words to the filter."""
@@ -404,15 +456,8 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
     message_text = update.message.text # Original message text
 
     # Handle broadcast message input from admin
-    if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
-        if update.message.text or update.message.photo or update.message.video or update.message.document:
-            BROADCAST_MESSAGE[user.id] = update.message
-            await update.message.reply_text(
-                "Message received. Kya aap ise broadcast karna chahenge?",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]])
-            )
-        else:
-            await update.message.reply_text("Kripya ek text message, photo, video, ya document bhejein broadcast karne ke liye.")
+    if is_admin(user.id) and BROADCAST_MESSAGE.get(user.id) == "waiting_for_message":
+        await handle_broadcast_message(update, context)
         return
 
     # Process messages for profanity only in groups/supergroups
@@ -443,8 +488,6 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                     f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
                     f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
                     f"<b>🆔 केस ID:</b> <code>{case_id_value}</code>\n\n"
-                    # --- YAHAN BADLAV KIYA GAYA HAI ---
-                    # Original message content ko spoiler format mein add karein
                     f"<b>➡️ मूल मैसेज:</b> ||{message_text}||\n"
                 )
                 sent_details_msg = await context.bot.send_message(
@@ -498,11 +541,10 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 except Exception as e:
                     logger.error(f"Error logging incident {case_id_value} to DB: {e}")
 
-            # --- 4. Send notification to the original group with the direct link ---
+            # --- 4. Send notification to the original group and all admins ---
             notification_message = (
                 f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
                 f"{user.mention_html()} (<code>{user.id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\n\n"
-                f"@{GROUP_ADMIN_USERNAME}, kripya sadasya ke vyavhaar ki samiksha karein.\n\n"
                 f"<b>Case ID:</b> <code>{case_id_value}</code>"
             )
 
@@ -525,9 +567,19 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                     reply_markup=reply_markup,
                     parse_mode='HTML'
                 )
+                
+                # Notify all admins in the group privately
+                admin_notification = (
+                    f"🚨 <b>Group Violation Alert</b>\n\n"
+                    f"<b>Group:</b> {chat.title} (<code>{chat.id}</code>)\n"
+                    f"<b>User:</b> {user.mention_html()} (<code>{user.id}</code>)\n"
+                    f"<b>Username:</b> @{user.username if user.username else 'N/A'}\n\n"
+                    f"<b>Case ID:</b> <code>{case_id_value}</code>"
+                )
+                
+                await notify_all_admins(chat.id, admin_notification, context, reply_markup)
 
-                # --- YAHAN SE 'Check Case ⬆️' WALA EXTRA MESSAGE HATA DIYA HAI ---
-                logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {case_id_value}. Notification sent (without 'Check Case ⬆️').")
+                logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {case_id_value}. Notification sent.")
             except Exception as e:
                 logger.error(f"Error sending profanity notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
         elif profanity_filter is None:
@@ -759,7 +811,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         notification_message = (
             f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
             f"{user_obj.user.mention_html()} (<code>{target_user_id}</code>) ne aise shabdon ka istemaal kiya hai jo group ke niyam ke khilaaf hain. Message ko hata diya gaya hai.\n\n"
-            f"@{GROUP_ADMIN_USERNAME}, kripya sadasya ke vyavhaar ki samiksha karein.\n\n"
             f"<b>Case ID:</b> <code>{case_id_value}</code>"
         )
 
@@ -775,6 +826,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode='HTML')
 
+    elif data == "confirm_broadcast":
+        await confirm_broadcast(update, context)
+    elif data == "cancel_broadcast":
+        await cancel_broadcast(update, context)
 
 # --- Flask App for Health Check ---
 @app.route('/')
@@ -809,14 +864,12 @@ def run_bot():
         # This handles ALL text messages in groups/supergroups for profanity detection
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP), handle_all_messages))
         # This handles admin's broadcast message input in private chat
-        # Modified to accept all message types for broadcast
         application.add_handler(MessageHandler(
-            (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & # Corrected filters.DOCUMENT to filters.Document.ALL
+            (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) &
             filters.ChatType.PRIVATE & 
             filters.User(user_id=ADMIN_USER_IDS), 
             handle_all_messages
         ))
-
 
         # Callback Query Handler for inline buttons
         application.add_handler(CallbackQueryHandler(button_callback_handler))
@@ -832,5 +885,4 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask_app)
     flask_thread.daemon = True # Allow main program to exit even if thread is running
     flask_thread.start()
-    run_bot()
-
+    run_bot() # Start the bot
