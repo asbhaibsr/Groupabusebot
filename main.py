@@ -7,7 +7,7 @@ import logging
 from pymongo import MongoClient
 
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, WebAppInfo
 from telegram.ext import (
     CommandHandler, MessageHandler, filters, CallbackContext,
     CallbackQueryHandler, Application
@@ -18,8 +18,8 @@ from profanity_filter import ProfanityFilter
 
 # --- Configuration (Hardcoded as per request, but MONGO_DB_URI & TELEGRAM_BOT_TOKEN remain env vars for security) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = -1002352329534
-CASE_CHANNEL_ID = -1002717243409
+LOG_CHANNEL_ID = -1002352329534 # Your specified Log Channel ID
+CASE_CHANNEL_ID = -1002717243409 # Your specified Case Channel ID
 MONGO_DB_URI = os.getenv("MONGO_DB_URI") # MongoDB URI still from environment for security
 GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin") # Default to 'admin' if not set
 
@@ -47,13 +47,13 @@ application = None
 mongo_client = None
 db = None # MongoDB database instance
 
-# Profanity Filter को initialize करें (अब इसे init_mongodb में सही तरीके से सेट किया जाएगा)
+# Profanity Filter को initialize करें (इसे init_mongodb में सही तरीके से सेट किया जाएगा)
 profanity_filter = None 
 
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
-    if not MONGO_DB_URI:
+    if MONGO_DB_URI is None: # Correct check for None
         logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
         return
@@ -63,10 +63,14 @@ def init_mongodb():
         db = mongo_client.get_database("asfilter")
         
         # Ensure 'groups' collection has a unique index on chat_id
+        if "groups" not in db.list_collection_names():
+            db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
         logger.info("MongoDB 'groups' collection unique index created/verified.")
 
         # Ensure 'users' collection has a unique index on user_id
+        if "users" not in db.list_collection_names():
+            db.create_collection("users")
         db.users.create_index("user_id", unique=True)
         logger.info("MongoDB 'users' collection unique index created/verified.")
 
@@ -85,26 +89,25 @@ def is_admin(user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
     """Logs messages to a designated Telegram channel."""
-    if application and LOG_CHANNEL_ID:
+    if application is not None and LOG_CHANNEL_ID is not None: # Correct check for None
         try:
             await application.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Error logging to channel {LOG_CHANNEL_ID}: {e}")
-    elif not application:
-        logger.warning("Application not initialized, cannot log to channel.")
     else:
-        logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.") # Should not happen now as it's hardcoded
+        logger.warning("Application not initialized or LOG_CHANNEL_ID is not set, cannot log to channel.") 
 
 # --- Bot Commands Handlers ---
 
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
-    chat = update.message.chat # Get chat object
+    chat = update.message.chat 
 
-    # Log only if in private chat
+    bot_info = await context.bot.get_me() 
+    bot_name = bot_info.first_name
+    bot_username = bot_info.username
+
     if chat.type == 'private':
-        bot_info = await context.bot.get_me() # Await the coroutine
-        bot_name = bot_info.first_name
         welcome_message = (
             f"👋 <b>Namaste {user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -132,7 +135,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         logger.info(f"User {user.first_name} ({user.id}) started the bot in private chat.")
 
         # Store user info in DB if not already present, only for private chats
-        if db and db.users:
+        if db is not None and db.users is not None: # Correct check for None
             try:
                 db.users.update_one(
                     {"user_id": user.id},
@@ -154,9 +157,28 @@ async def start(update: Update, context: CallbackContext) -> None:
         )
         await log_to_channel(log_message, parse_mode='HTML')
 
-    else:
-        # If /start is used in a group, just acknowledge or ignore
-        await update.message.reply_text("Hello! Main ek moderation bot hun. Aap mujhe apne group mein shamil kar sakte hain.")
+    elif chat.type in ['group', 'supergroup']: # Handle /start in groups
+        group_start_message = (
+            f"Hello! Main <b>{bot_name}</b> hun, aapka group moderation bot. "
+            f"Mujhe apne group mein add karke aap ise saaf suthra rakh sakte hain."
+        )
+        
+        # Construct the "Add to Group" URL
+        # The URL structure for adding a bot to a group is t.me/<bot_username>?startgroup=true
+        add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
+
+        group_keyboard = [
+            [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
+            [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
+        ]
+        reply_markup = InlineKeyboardMarkup(group_keyboard)
+
+        await update.message.reply_text(
+            text=group_start_message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        logger.info(f"Bot received /start in group: {chat.title} ({chat.id}).")
 
 
 async def stats(update: Update, context: CallbackContext) -> None:
@@ -166,10 +188,10 @@ async def stats(update: Update, context: CallbackContext) -> None:
 
     total_groups = 0
     total_users = 0
-    if db:
+    if db is not None: # Correct check for None
         try:
-            total_groups = db.groups.count_documents({})
-            total_users = db.users.count_documents({})
+            total_groups = db.groups.count_documents({}) if db.groups is not None else 0 # Correct check for None
+            total_users = db.users.count_documents({}) if db.users is not None else 0   # Correct check for None
         except Exception as e:
             logger.error(f"Error fetching stats from DB: {e}")
             await update.message.reply_text(f"Stats fetch karte samay error hui: {e}")
@@ -208,7 +230,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
 
     broadcast_msg = BROADCAST_MESSAGE.pop(user_id)
     if broadcast_msg:
-        if not db or not db.groups:
+        if db is None or db.groups is None: # Correct check for None
             await query.edit_message_text("Broadcast ke liye MongoDB groups collection available nahi hai. Broadcast nahi kar sakte.")
             logger.error("MongoDB 'groups' collection not available for broadcast.")
             return
@@ -216,8 +238,10 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         target_groups = []
         try:
             # Fetch all chat_ids from the 'groups' collection
-            for doc in db.groups.find({}, {"chat_id": 1}): # Fetch only chat_id
-                target_groups.append(doc['chat_id'])
+            # Use 'is not None' for the collection object check
+            if db.groups is not None: 
+                for doc in db.groups.find({}, {"chat_id": 1}): # Fetch only chat_id
+                    target_groups.append(doc['chat_id'])
             logger.info(f"Fetched {len(target_groups)} group IDs from DB for broadcast.")
         except Exception as e:
             await query.edit_message_text(f"Groups retrieve karte samay error hui: {e}")
@@ -231,24 +255,20 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
 
         success_count = 0
         fail_count = 0
-        # Send broadcast message concurrently using asyncio.gather for better performance
-        tasks = []
-        for chat_id in target_groups:
-            tasks.append(context.bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=broadcast_msg.chat.id,
-                message_id=broadcast_msg.message_id
-            ))
         
-        # Execute all tasks and collect results
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, Exception):
-                fail_count += 1
-                logger.error(f"Failed to broadcast: {result}")
-            else:
+        # Send broadcast message sequentially to avoid API limits and track individual failures better
+        for chat_id in target_groups:
+            try:
+                await context.bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=broadcast_msg.chat.id,
+                    message_id=broadcast_msg.message_id
+                )
                 success_count += 1
+                await asyncio.sleep(0.1) # Small delay to avoid hitting Telegram API rate limits
+            except Exception as e:
+                fail_count += 1
+                logger.error(f"Failed to broadcast to {chat_id}: {e}")
 
         await query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
@@ -267,7 +287,7 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
     if not word_to_add:
         await update.message.reply_text("Kripya ek valid shabd dein.")
         return
-    if profanity_filter: # Check if filter is initialized
+    if profanity_filter is not None: # Correct check for None
         try:
             if profanity_filter.add_bad_word(word_to_add):
                 await update.message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai\\.", parse_mode='MarkdownV2')
@@ -285,7 +305,7 @@ async def add_abuse_word(update: Update, context: CallbackContext) -> None:
 async def welcome_new_member(update: Update, context: CallbackContext) -> None:
     new_members = update.message.new_chat_members
     chat = update.message.chat
-    bot_info = await context.bot.get_me() # Await the coroutine
+    bot_info = await context.bot.get_me() 
 
     for member in new_members:
         if member.id == bot_info.id:
@@ -302,7 +322,7 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {update.message.from_user.id}.")
 
             # Store group info in DB
-            if db and db.groups:
+            if db is not None and db.groups is not None: # Correct check for None
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
@@ -331,16 +351,16 @@ async def welcome_new_member(update: Update, context: CallbackContext) -> None:
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
-        else:
-            # Naya user group mein add hua hai (Log this event)
-            log_message = (
-                f"<b>➕ Naya User Joined Group:</b>\n"
-                f"User: {member.mention_html()} (<code>{member.id}</code>)\n"
-                f"Group: <code>{chat.title}</code> (<code>{chat.id}</code>)\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-            )
-            await log_to_channel(log_message, parse_mode='HTML')
-            logger.info(f"User {member.full_name} ({member.id}) joined group {chat.title} ({chat.id}).")
+        # else: # Removed this block as per your request. No log for other new members.
+        #     # Naya user group mein add hua hai (Log this event)
+        #     log_message = (
+        #         f"<b>➕ Naya User Joined Group:</b>\n"
+        #         f"User: {member.mention_html()} (<code>{member.id}</code>)\n"
+        #         f"Group: <code>{chat.title}</code> (<code>{chat.id}</code>)\n"
+        #         f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        #     )
+        #     await log_to_channel(log_message, parse_mode='HTML')
+        #     logger.info(f"User {member.full_name} ({member.id}) joined group {chat.title} ({chat.id}).")
 
 
 async def handle_all_messages(update: Update, context: CallbackContext) -> None:
@@ -363,7 +383,7 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
     # Process messages for profanity only in groups/supergroups
     # Ensure profanity_filter is initialized before use
     if chat.type in ['group', 'supergroup'] and message_text and not update.message.via_bot:
-        if profanity_filter and profanity_filter.contains_profanity(message_text):
+        if profanity_filter is not None and profanity_filter.contains_profanity(message_text): # Correct check for None
             try:
                 await context.bot.delete_message(chat_id=chat.id, message_id=update.message.message_id)
                 logger.info(f"Deleted abusive message from {user.username or user.full_name} ({user.id}) in {chat.title} ({chat.id}).")
@@ -406,7 +426,7 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 logger.info(f"Abusive message detected and handled for user {user.id} in chat {chat.id}. Case ID: {abuse_no}. Notification sent.")
             except Exception as e:
                 logger.error(f"Error sending profanity notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
-        elif not profanity_filter:
+        elif profanity_filter is None: # Correct check for None
             logger.warning("Profanity filter not initialized. Skipping profanity check in group.")
     # No action if not in group/supergroup or no profanity detected
 
@@ -438,7 +458,7 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
     parts = data.split('_')
     user_id_for_case = int(parts[2])
     group_id_for_case = int(parts[3])
-    original_message_id = int(parts[4]) # This is the ID of the deleted message
+    # original_message_id = int(parts[4]) # This is the ID of the deleted message - not used directly here
     abuse_no_from_callback = parts[5]
 
     original_abusive_content = "Original message content not available (deleted for profanity)." # Content is already deleted
@@ -458,7 +478,7 @@ async def view_case_details_forward(update: Update, context: CallbackContext) ->
             f"<code>{original_abusive_content}</code>"
         )
         
-        if application and CASE_CHANNEL_ID:
+        if application is not None and CASE_CHANNEL_ID is not None: # Correct check for None
             sent_case_message = await application.bot.send_message(
                 chat_id=CASE_CHANNEL_ID,
                 text=case_details_message,
@@ -537,7 +557,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode='HTML')
     elif data == "main_menu":
         user = query.from_user
-        bot_info = await context.bot.get_me() # Await the coroutine
+        bot_info = await context.bot.get_me() 
         bot_name = bot_info.first_name
         welcome_message = (
             f"👋 <b>Namaste {user.first_name}!</b>\n\n"
@@ -764,3 +784,4 @@ if __name__ == "__main__":
 
     # Telegram बॉट को मुख्य थ्रेड में चलाएं
     run_bot()
+
