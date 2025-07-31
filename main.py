@@ -5,7 +5,7 @@ import threading
 import asyncio
 import logging
 from pymongo import MongoClient
-from telegram.error import BadRequest, TelegramError # Import specific Telegram errors
+from telegram.error import BadRequest, Forbidden, Unauthorized, TelegramError # Import specific Telegram errors
 
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, WebAppInfo
@@ -17,18 +17,18 @@ from telegram.ext import (
 # Custom module import
 from profanity_filter import ProfanityFilter
 
-# --- Configuration (Hardcoded as per request, but MONGO_DB_URI & TELEGRAM_BOT_TOKEN remain env vars for security) ---
+# --- Configuration ---
+# TELEGRAM_BOT_TOKEN aur MONGO_DB_URI Koyeb environment variables se aaenge
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = -1002352329534 # Your specified Log Channel ID
-CASE_CHANNEL_ID = -1002717243409 # Your specified Case Channel ID
-CASE_CHANNEL_USERNAME = "AbusersDetector" # Your specified Case Channel Username for linking
-MONGO_DB_URI = os.getenv("MONGO_DB_URI") # MongoDB URI still from environment for security
+LOG_CHANNEL_ID = -1002352329534 # Aapka Log Channel ID
+CASE_CHANNEL_ID = -1002717243409 # Aapka Case Channel ID (Please re-verify this ID)
+CASE_CHANNEL_USERNAME = "AbusersDetector" # Aapka Case Channel Username (Only for fallback link display)
 GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin") # Default to 'admin' if not set
 
 # Admin User IDs (आपका दिया गया ID)
 ADMIN_USER_IDS = [7315805581] 
 
-# Bot start time record करे
+# Bot start time record
 bot_start_time = datetime.now()
 
 # Global variable to store broadcast message
@@ -49,13 +49,13 @@ application = None
 mongo_client = None
 db = None # MongoDB database instance
 
-# Profanity Filter को initialize करें (इसे init_mongodb में सही तरीके से सेट किया जाएगा)
+# Profanity Filter initialization
 profanity_filter = None 
 
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
-    if MONGO_DB_URI is None: # Correct check for None
+    if MONGO_DB_URI is None:
         logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
         return
@@ -87,8 +87,7 @@ def init_mongodb():
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
-        # If MongoDB fails, profanity_filter will use default list
-        profanity_filter = ProfanityFilter(mongo_uri=None) # Fallback to default list
+        profanity_filter = ProfanityFilter(mongo_uri=None)
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
 
 # --- Helper Functions ---
@@ -428,8 +427,15 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
 
             try:
                 # 1. Forward the original message to the case channel using its numeric ID
+                # This is crucial for private channels.
+                logger.info(f"Attempting to forward message {update.message.message_id} from chat {chat.id} to case channel {CASE_CHANNEL_ID}...")
+                
+                # Check if CASE_CHANNEL_ID is correctly set and an integer
+                if not isinstance(CASE_CHANNEL_ID, int):
+                    raise ValueError(f"CASE_CHANNEL_ID is not an integer: {CASE_CHANNEL_ID}. Please verify your configuration.")
+
                 forwarded_message = await context.bot.forward_message(
-                    chat_id=CASE_CHANNEL_ID,
+                    chat_id=CASE_CHANNEL_ID, # Use the numeric ID directly here
                     from_chat_id=chat.id,
                     message_id=update.message.message_id
                 )
@@ -437,13 +443,31 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
                 # 2. Construct the direct link to the forwarded message in the case channel
                 # This format works for both public and private channels by removing '-100' prefix
                 # from the chat ID and combining it with the message ID.
-                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                case_detail_url = f"https://t.me/c/{channel_link_id}/{forwarded_message.message_id}"
                 
-                logger.info(f"Original abusive message forwarded to case channel. Generated URL: {case_detail_url}")
+                if forwarded_message: # Check if forwarding was successful before getting message_id
+                    # Ensure CASE_CHANNEL_ID is converted to string for .replace()
+                    channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                    case_detail_url = f"https://t.me/c/{channel_link_id}/{forwarded_message.message_id}"
+                    logger.info(f"Original abusive message forwarded successfully. Generated URL: {case_detail_url}")
+                else:
+                    logger.warning("Forwarded message object is None after forward_message call. This indicates a potential issue despite no direct error. Falling back to default channel URL.")
+                    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback if forwarded_message is None
+            
+            except Forbidden as e:
+                logger.error(f"TelegramError (Forbidden) forwarding message to case channel: {e}. Bot does not have permission to send messages to channel {CASE_CHANNEL_ID}. Please check 'Post Messages' admin permission.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
+            except BadRequest as e:
+                logger.error(f"TelegramError (BadRequest) forwarding message to case channel: {e}. This might be due to an invalid CASE_CHANNEL_ID or message_id. Please verify.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
+            except Unauthorized as e:
+                logger.error(f"TelegramError (Unauthorized) forwarding message to case channel: {e}. Bot token might be invalid or revoked.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback
             except TelegramError as e:
-                logger.error(f"Error forwarding message to case channel: {e}. Ensure bot is admin in case channel and has 'Post Messages' permission.")
-                # If forwarding fails, the fallback URL remains the channel's general link.
+                logger.error(f"General TelegramError forwarding message: {e}. Ensure bot is admin in case channel ({CASE_CHANNEL_ID}) and has 'Post Messages' permission.")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # Fallback if forwarded_message is None
+            except Exception as e:
+                logger.error(f"An unexpected error occurred during message forwarding: {e}")
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" # General fallback
             
             notification_message = (
                 f"⛔ <b>Group Niyam Ulanghan</b>\n\n"
@@ -753,3 +777,4 @@ if __name__ == "__main__":
 
     # Telegram बॉट को मुख्य थ्रेड में चलाएं
     run_bot()
+
