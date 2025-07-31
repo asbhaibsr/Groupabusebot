@@ -68,7 +68,9 @@ def init_mongodb():
         db.groups.create_index("chat_id", unique=True)
         logger.info("MongoDB 'groups' collection unique index created/verified.")
 
-        if "users" not not in collection_names:
+        # FIX STARTS HERE
+        if "users" not in collection_names:
+        # FIX ENDS HERE
             db.create_collection("users")
         db.users.create_index("user_id", unique=True)
         logger.info("MongoDB 'users' collection unique index created/verified.")
