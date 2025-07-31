@@ -61,15 +61,14 @@ def init_mongodb():
         db = mongo_client.get_database("asfilter")
 
         # Create collections if they don't exist and ensure indexes
-        # Corrected: Use db.list_collection_names() directly on the database object
-        collection_names = db.list_collection_names()
+        collection_names = db.list_collection_names() # Corrected from db.list_collections_names()
 
         if "groups" not in collection_names:
             db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
         logger.info("MongoDB 'groups' collection unique index created/verified.")
 
-        if "users" not in collection_names:
+        if "users" not not in collection_names:
             db.create_collection("users")
         db.users.create_index("user_id", unique=True)
         logger.info("MongoDB 'users' collection unique index created/verified.")
@@ -548,7 +547,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             "• `/start`: Bot ko start karein (private aur group mein).\n"
             "• `/stats`: Bot usage stats dekhein (sirf bot admins ke liye).\n"
             "• `/broadcast`: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-            "• `/addabuse <word>`: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye)."
+            f"• `/addabuse &lt;shabd&gt;`: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye)." # FIXED: Escaped < and >
         )
         keyboard = [
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]
