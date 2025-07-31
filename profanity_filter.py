@@ -49,18 +49,104 @@ class ProfanityFilter:
         logger.info(f"Profanity filter initialized with {len(self.bad_words)} bad words.")
 
     def _load_default_bad_words(self):
-        # यहाँ अपनी अपशब्दों की सूची जोड़ें
+        # Comprehensive list of profanity in Hindi, English, and variations
         default_list = [
-            "bhadve", "bsdk", "madarchod", "behenchod", "randi", "saala", "saali", "gaand", "harami", 
-            "kutte", "kutte ki aulad", "chutiya", "lund", "chod", "maadarjaat", "bhosdike", 
-            "penchod", "mc", "bc", "gaandu", "gand", "chut", "madarchod", "behenchod",
-            # और अधिक शब्द यहाँ जोड़ें
+            # Common Hindi profanity and variations
+            "bhadve", "bhadwe", "bhadva", "bhadvaa", "bhosdike", "bhosdiwale", "bhosad", "bhosada", 
+            "bsdk", "bsdka", "bsdke", "bsdi", "bsdiwale", "bsdiwala", "bsdwala", "bsdwale",
+            "madarchod", "madrchod", "madherchod", "maderchod", "madarjaat", "madarjat", "maderjaat",
+            "behenchod", "behenchhod", "behenchud", "behenchood", "behenkelode", "behenkelund",
+            "randi", "rand", "randiwa", "randikhana", "randikhane", "randi ka", "randi ki",
+            "saala", "sala", "saale", "sale", "saali", "sali", "saalya", "salya",
+            "gaand", "gand", "gaandu", "gandu", "gaandfat", "gandfat", "gaand mara", "gand mara",
+            "harami", "haraami", "haramkhor", "haramkhor", "harami ki aulad",
+            "kutte", "kutta", "kutti", "kuttiya", "kutte ka", "kutte ke", "kutte ki aulad",
+            "chutiya", "chutia", "chutiye", "chutiyapa", "chut", "choot", "chutad", "chootad",
+            "lund", "lund", "laund", "loda", "lode", "loduu", "land", "lauda", "laude",
+            "chod", "chhod", "chood", "chud", "chudai", "chudail", "chudasi", "chudwa",
+            "penchod", "penchhod", "pencood", "penchud", "pensod",
+            "mc", "bc", "bkl", "lodu", "lawde", "lawda", "loda", "lodu",
+            "gandu", "gaandu", "gandfat", "gaandfat", "gandmasti", "gaandmasti",
+            "chakke", "chakka", "hijda", "hijde", "hijra", "hijre",
+            "nautankibaaz", "nautanki", "natakbaaz", "natak",
+            "kamine", "kaminey", "kamina", "kamini",
+            
+            # English profanity and variations
+            "fuck", "fucker", "fucking", "motherfucker", "motherfucking", "fuckface", "fuckboy", 
+            "fuckgirl", "fuckoff", "fuckyou", "fuck u", "fuk", "fuking", "fuker", "fucc", "fucck",
+            "shit", "shite", "shithead", "shitter", "bullshit", "shitface", "shitbag", "shitty",
+            "asshole", "ass", "arse", "arsehole", "asshat", "asswipe", "assclown", "asslicker",
+            "bitch", "bitches", "bitching", "bitchy", "biatch", "bich", "beetch", "bitchass",
+            "bastard", "bastards", "basted", "bastid", "basterd", "basturd",
+            "dick", "dickhead", "dickface", "dickwad", "dickweed", "dickbag", "dickish", "dickless",
+            "pussy", "pussies", "pusy", "puzzy", "pussi", "pusi", "pussie",
+            "cunt", "cunts", "cuntface", "cunty", "cuntbag", "cuntish", "cunthead",
+            "whore", "whores", "whoring", "ho", "hoe", "hoes", "hoebag", "hoeski",
+            "slut", "sluts", "slutty", "slutbag", "slutface", "slutshaming", "slutwalk",
+            "cock", "cocks", "cocky", "cockface", "cockhead", "cocksucker", "cockwomble",
+            "wanker", "wank", "wanking", "wankered", "wankstain", "wanky", "wankjob",
+            "twat", "twats", "twatty", "twatwaffle", "twatface", "twathead", "twatish",
+            
+            # Mixed/Hinglish profanity
+            "fuck bhenchod", "bhenchod fuck", "madarchod fuck", "fuck madarchod",
+            "bhosdiwala fuck", "fuck bhosdiwala", "randi ka bacha", "randi ki aulad",
+            "chutiya fuck", "fuck chutiya", "lund chus", "gaand mara", "ass gaand",
+            "bitch saali", "saali bitch", "whore randi", "randi whore",
+            
+            # Common abbreviations and number substitutions
+            "fck", "fcuk", "fuk", "fku", "f*ck", "f**k", "f***", "f##k", "f00k",
+            "sh1t", "sh!t", "sht", "s**t", "sh*t", "sh**", "sh##", "sh00t",
+            "b1tch", "b!tch", "btch", "b**ch", "b*tch", "bi*ch", "b00ch",
+            "a55", "a$$", "a**", "a*s", "@$$", "@**", "@ss", "a55hole",
+            "d1ck", "d!ck", "dck", "d**k", "d*ck", "di*k", "d00k",
+            "p0rn", "pr0n", "p*rn", "p**n", "p00n", "p0rn", "prn",
+            
+            # Creative misspellings and variations
+            "phuck", "phuk", "phacker", "phucker", "phucc", "phucck",
+            "sheeet", "shiet", "shytt", "shite", "shyte", "shitt",
+            "beech", "beotch", "biyotch", "biznitch", "bizatch", "bizzle",
+            "azz", "azzhole", "azzh0le", "azzhole", "@zz", "@zzh0le",
+            "dikk", "dikkhead", "dikkhed", "dikhed", "dikhead", "dikhed",
+            "kunt", "qunt", "cwnt", "c*nt", "c**t", "c00nt", "k00nt",
+            
+            # Reversed words
+            "kcuf", "tihs", "hctib", "kcid", "yssip", "tnuc", "erohw", "tuls", "kcoj",
+            "odhcab", "odhcam", "odhceb", "odhcram", "odhcuf", "odhcus", "odhcut",
+            
+            # Common phrases
+            "teri maa ki chut", "teri maa ka bhosda", "maa chuda", "behen ka loda",
+            "bhosdi ke", "gaand mein dam", "lund lele", "chut marike",
+            "fuck off", "fuck you", "go to hell", "screw you", "suck my dick",
+            "lick my ass", "kiss my ass", "eat shit", "shit happens", "bull shit",
+            
+            # Regional variations
+            "lauda", "laude", "laudo", "lawda", "lawde", "lawdo", "loda", "lode", "lodo",
+            "chodu", "choda", "chode", "chodi", "chodu", "choddi", "chodke",
+            "gandu", "gando", "gandi", "gand", "gaand", "gandfat", "gandmasti",
+            "bhenchod", "bhenchhod", "bhenchud", "bhenchood", "bhenkelode",
+            
+            # Add more as needed
+            "sucker", "loser", "idiot", "moron", "retard", "dumbass", "stupid",
+            "jerk", "scumbag", "douche", "douchebag", "pig", "swine", "animal",
+            "dog", "swear", "abuse", "badword", "gaali", "gali", "abusive"
         ]
+        
+        # Add variations with spaces replaced by special characters
+        additional_variations = []
+        for word in default_list:
+            if ' ' in word:
+                additional_variations.append(word.replace(' ', ''))
+                additional_variations.append(word.replace(' ', '_'))
+                additional_variations.append(word.replace(' ', '-'))
+                additional_variations.append(word.replace(' ', '.'))
+                additional_variations.append(word.replace(' ', '*'))
+        
+        default_list.extend(additional_variations)
+        
         return set(default_list)
 
     def _load_additional_bad_words_from_db(self):
         """Loads additional bad words from MongoDB and adds them to the existing set."""
-        # यहाँ 'if self.collection:' की जगह 'if self.collection is not None:' का उपयोग करें
         if self.collection is not None: 
             try:
                 db_words = [doc['word'] for doc in self.collection.find({}) if 'word' in doc]
@@ -77,7 +163,6 @@ class ProfanityFilter:
         normalized_word = word.lower().strip()
         if normalized_word not in self.bad_words:
             self.bad_words.add(normalized_word)
-            # यहाँ 'if self.collection:' की जगह 'if self.collection is not None:' का उपयोग करें
             if self.collection is not None: # Agar MongoDB connect hai to wahan bhi add kar do
                 try:
                     self.collection.update_one(
@@ -100,4 +185,3 @@ class ProfanityFilter:
             if re.search(r'\b' + re.escape(word) + r'\b', text):
                 return True
         return False
-
