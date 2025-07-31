@@ -38,6 +38,7 @@ class ProfanityFilter:
                 self.db = None
                 self.collection = None
             except Exception as e:
+                # यहाँ त्रुटि पकड़ी जा रही थी क्योंकि self.collection को सीधे if में उपयोग किया गया था
                 logger.error(f"An unexpected error occurred during MongoDB initialization: {e}. Using default profanity list.")
                 self.mongo_client = None
                 self.db = None
@@ -59,7 +60,8 @@ class ProfanityFilter:
 
     def _load_additional_bad_words_from_db(self):
         """Loads additional bad words from MongoDB and adds them to the existing set."""
-        if self.collection:
+        # यहाँ 'if self.collection:' की जगह 'if self.collection is not None:' का उपयोग करें
+        if self.collection is not None: 
             try:
                 db_words = [doc['word'] for doc in self.collection.find({}) if 'word' in doc]
                 self.bad_words.update(db_words)
@@ -75,7 +77,8 @@ class ProfanityFilter:
         normalized_word = word.lower().strip()
         if normalized_word not in self.bad_words:
             self.bad_words.add(normalized_word)
-            if self.collection: # Agar MongoDB connect hai to wahan bhi add kar do
+            # यहाँ 'if self.collection:' की जगह 'if self.collection is not None:' का उपयोग करें
+            if self.collection is not None: # Agar MongoDB connect hai to wahan bhi add kar do
                 try:
                     self.collection.update_one(
                         {"word": normalized_word},
@@ -97,3 +100,4 @@ class ProfanityFilter:
             if re.search(r'\b' + re.escape(word) + r'\b', text):
                 return True
         return False
+
