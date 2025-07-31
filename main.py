@@ -270,6 +270,9 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
         success_count = 0
         fail_count = 0
 
+        # Send an initial message to the user confirming broadcast started
+        await query.edit_message_text(f"Broadcast shuru ho raha hai. Sabhi groups mein bheja ja raha hai...")
+
         for chat_id in target_groups:
             try:
                 await context.bot.copy_message(
@@ -283,7 +286,7 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                 fail_count += 1
                 logger.error(f"Failed to broadcast to {chat_id}: {e}")
 
-        await query.edit_message_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
+        await query.message.reply_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
     else:
         await query.edit_message_text("Broadcast message not found.")
@@ -373,14 +376,14 @@ async def handle_all_messages(update: Update, context: CallbackContext) -> None:
 
     # Handle broadcast message input from admin
     if is_admin(user.id) and user.id in BROADCAST_MESSAGE and BROADCAST_MESSAGE[user.id] is None:
-        if update.message.text:
+        if update.message.text or update.message.photo or update.message.video or update.message.document:
             BROADCAST_MESSAGE[user.id] = update.message
             await update.message.reply_text(
                 "Message received. Kya aap ise broadcast karna chahenge?",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes, Broadcast!", callback_data="confirm_broadcast")]])
             )
         else:
-            await update.message.reply_text("Kripya ek text message bhejein broadcast karne ke liye.")
+            await update.message.reply_text("Kripya ek text message, photo, video, ya document bhejein broadcast karne ke liye.")
         return
 
     # Process messages for profanity only in groups/supergroups
@@ -521,6 +524,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             return
     elif query.message.chat.type == 'private' and not is_admin(user_id):
         # Allow bot admins to use broadcast confirm in private chat
+        # This condition already handles non-bot-admins in private chat for other buttons
         await query.edit_message_text("Aapke paas is action ko karne ki permission nahi hai.")
         logger.warning(f"Non-bot-admin user {user_id} tried to use private chat admin button.")
         return
@@ -548,9 +552,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
     elif data == "other_bots":
         other_bots_text = (
             "<b>Mere kuch aur bots:</b>\n\n"
-            "• @YourOtherBot1: Description of Bot 1\n"
-            "• @YourOtherBot2: Description of Bot 2\n"
-            "• @YourOtherBot3: Description of Bot 3\n"
+            "• <b>Movies & Webseries:</b> @asflter_bot\n"
+            "  <i>Ye hai sabhi movies, webseries, anime, Korean drama, aur sabhi TV show sabhi languages mein yahan milte hain.</i>\n\n"
+            "• <b>Chat Bot:</b> @askiangelbot\n"
+            "  <i>Ye bot group par chat karti hai aur isme acche acche group manage karne ke liye commands hain.</i>\n"
         )
         keyboard = [
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]
@@ -561,12 +566,10 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
     elif data == "donate_info":
         donate_text = (
             "<b>💖 Bot ko support karein!</b>\n\n"
-            "Yeh bot aapke groups ko manage karne mein madad karta hai. "
-            "Iske server aur maintenance costs hote hain.\n\n"
-            "Aap apni marzi se donate karke bot ki growth mein madad kar sakte hain.\n\n"
+            "Agar aapko ye bot pasand aaya hai to aap humein kuch paisa de sakte hain "
+            "jisse hum is bot ko aage tak chalate rahein.\n\n"
             "<b>Donation Methods:</b>\n"
-            "• UPI: `your_upi_id@upi` (Example: `user@paytm`)\n"
-            "• Crypto: `Your_Crypto_Address_Here` (Example: `TRC20 USDT: ABC...XYZ`)\n\n"
+            "• UPI: `arsadsaifi8272@ibl`\n\n"
             "Aapka har sahyog value karta hai! Dhanyawad!"
         )
         keyboard = [
@@ -777,7 +780,13 @@ def run_bot():
         # This handles ALL text messages in groups/supergroups for profanity detection
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP), handle_all_messages))
         # This handles admin's broadcast message input in private chat
-        application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_USER_IDS), handle_all_messages))
+        # Modified to accept all message types for broadcast
+        application.add_handler(MessageHandler(
+            (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.DOCUMENT) & 
+            filters.ChatType.PRIVATE & 
+            filters.User(user_id=ADMIN_USER_IDS), 
+            handle_all_messages
+        ))
 
 
         # Callback Query Handler for inline buttons
