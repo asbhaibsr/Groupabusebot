@@ -61,19 +61,17 @@ def init_mongodb():
         db = mongo_client.get_database("asfilter")
 
         # Create collections if they don't exist and ensure indexes
-        collection_names = db.list_collection_names() # Corrected from db.list_collections_names()
+        collection_names = db.list_collection_names()
 
         if "groups" not in collection_names:
             db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
         logger.info("MongoDB 'groups' collection unique index created/verified.")
 
-        # FIX STARTS HERE
-        if "users" not in collection_names:
-        # FIX ENDS HERE
+        if "users" not in collection_names: # FIX STARTS HERE (Ensuring 'users' collection exists)
             db.create_collection("users")
         db.users.create_index("user_id", unique=True)
-        logger.info("MongoDB 'users' collection unique index created/verified.")
+        logger.info("MongoDB 'users' collection unique index created/verified.") # FIX ENDS HERE
 
         if "incidents" not in collection_names:
             db.create_collection("incidents")
@@ -234,7 +232,7 @@ async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type != 'private':
         await update.message.reply_text("Broadcast command sirf private chat mein hi shuru ki ja sakti hai.")
         return
-    await update.message.reply_text("Kripya apna message bhejein jo sabhi groups par broadcast karna hai.")
+    await update.message.reply_text("Kripya apna message bhejein jo sabhi groups aur users par broadcast karna hai.")
     BROADCAST_MESSAGE[update.effective_user.id] = None # Mark as waiting for message
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
 
@@ -250,37 +248,53 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
 
     broadcast_msg = BROADCAST_MESSAGE.pop(user_id)
     if broadcast_msg:
-        if db is None or db.groups is None:
-            await query.edit_message_text("Broadcast ke liye MongoDB groups collection available nahi hai. Broadcast nahi kar sakte.")
-            logger.error("MongoDB 'groups' collection not available for broadcast.")
+        if db is None:
+            await query.edit_message_text("Broadcast ke liye MongoDB collections available nahi hai. Broadcast nahi kar sakte.")
+            logger.error("MongoDB collections not available for broadcast.")
             return
 
-        target_groups = []
+        target_chats = []
+        
+        # Fetch group IDs
+        group_ids = []
         try:
             if db.groups is not None:
                 for doc in db.groups.find({}, {"chat_id": 1}):
-                    target_groups.append(doc['chat_id'])
-            logger.info(f"Fetched {len(target_groups)} group IDs from DB for broadcast.")
+                    group_ids.append(doc['chat_id'])
+            logger.info(f"Fetched {len(group_ids)} group IDs from DB for broadcast.")
         except Exception as e:
-            await query.edit_message_text(f"Groups retrieve karte samay error hui: {e}")
             logger.error(f"Error fetching group IDs from DB for broadcast: {e}")
-            return
+            group_ids = [] # Ensure it's an empty list on error
 
-        if not target_groups:
-            await query.edit_message_text("Broadcast ke liye koi target group/channel IDs database mein nahi mile. Kripya ensure karein bot groups mein added hai aur DB mein entries hain.")
+        # Fetch user IDs (private chats)
+        user_ids = []
+        try:
+            if db.users is not None:
+                for doc in db.users.find({}, {"user_id": 1}):
+                    # Ensure we don't try to send to the bot admin who initiated broadcast or other special users
+                    if doc['user_id'] != user_id: 
+                        user_ids.append(doc['user_id'])
+            logger.info(f"Fetched {len(user_ids)} user IDs from DB for broadcast.")
+        except Exception as e:
+            logger.error(f"Error fetching user IDs from DB for broadcast: {e}")
+            user_ids = [] # Ensure it's an empty list on error
+        
+        target_chats.extend(group_ids)
+        target_chats.extend(user_ids)
+
+        if not target_chats:
+            await query.edit_message_text("Broadcast ke liye koi target group/user IDs database mein nahi mile. Kripya ensure karein bot groups mein added hai aur users ne bot ko start kiya hai.")
             logger.warning(f"Admin {user_id} tried to broadcast but no target chat IDs found in DB.")
             return
 
         success_count = 0
         fail_count = 0
 
-        # Send an initial message to the user confirming broadcast started
-        # The query.message.reply_text() is used here to send a new message,
-        # not edit the original button message.
-        await query.message.reply_text(f"Broadcast shuru ho raha hai. Sabhi groups mein bheja ja raha hai...")
+        await query.message.reply_text(f"Broadcast shuru ho raha hai. Sabhi groups aur users mein bheja ja raha hai... (Total targets: {len(target_chats)})")
 
-        for chat_id in target_groups:
+        for chat_id in target_chats:
             try:
+                # Use copy_message as it handles various message types (text, photo, video, etc.)
                 await context.bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=broadcast_msg.chat.id,
@@ -288,12 +302,20 @@ async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
                 )
                 success_count += 1
                 await asyncio.sleep(0.1) # Small delay to avoid FloodWait
-            except Exception as e:
+            except Forbidden:
+                logger.warning(f"Broadcast failed to {chat_id} (Forbidden: Bot was blocked by user or kicked from group).")
                 fail_count += 1
-                logger.error(f"Failed to broadcast to {chat_id}: {e}")
+            except BadRequest as e:
+                logger.warning(f"Broadcast failed to {chat_id} (BadRequest: {e}).")
+                fail_count += 1
+            except TelegramError as e:
+                logger.warning(f"Broadcast failed to {chat_id} (TelegramError: {e}).")
+                fail_count += 1
+            except Exception as e:
+                logger.error(f"Failed to broadcast to {chat_id} (Unknown error: {e}).")
+                fail_count += 1
 
-        # Final message about broadcast completion
-        await query.message.reply_text(f"Broadcast complete! Successfully sent to {success_count} groups/channels. Failed: {fail_count}.")
+        await query.message.reply_text(f"Broadcast complete! Successfully sent to {success_count} chats. Failed: {fail_count}.")
         logger.info(f"Broadcast initiated by {user_id} completed. Success: {success_count}, Failed: {fail_count}.")
     else:
         await query.edit_message_text("Broadcast message not found.")
@@ -534,7 +556,6 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         # This condition already handles non-bot-admins in private chat for other buttons
         # For 'confirm_broadcast' specifically, this check is handled within that function.
         # For other private chat buttons, it's generally fine for non-admins to click unless specific logic is needed.
-        # However, for the provided buttons (help, other bots, donate), no admin check is strictly needed here.
         pass # Keep this for now, if you add admin-only buttons in private chat later, re-evaluate.
 
 
