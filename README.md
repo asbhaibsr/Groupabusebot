@@ -1,69 +1,92 @@
 <h1 align="center">
-  🚫 Group Abuse Filter Bot 🚫
+  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=30&pause=1000&center=true&vCenter=true&width=435&lines=🚫+Group+Abuse+Filter+Bot+🚫;Keep+your+Telegram+groups+clean+and+safe!">
 </h1>
 
 <p align="center">
-  <b>A simple Telegram bot to automatically detect and remove abusive messages from groups.</b><br>
-  <i>Developed and maintained by <a href="https://t.me/asbhaibsr">@asbhaibsr</a></i><br>
-  📢 Updates: <a href="https://t.me/asbhai_bsr">@asbhai_bsr</a>
+  <b>A smart Telegram bot that automatically detects and removes abusive messages from groups using a profanity filter.</b><br><br>
+  <a href="https://t.me/asbhaibsr">
+    <img src="https://img.shields.io/badge/👤 Owner-%40asbhaibsr-blue?style=for-the-badge&logo=telegram" />
+  </a>
+  <a href="https://t.me/asbhai_bsr">
+    <img src="https://img.shields.io/badge/📢 Updates-%40asbhai__bsr-orange?style=for-the-badge&logo=telegram" />
+  </a>
 </p>
 
 ---
 
 ## ✨ Features
 
-- 🧠 Detects offensive/profane language using a keyword-based filter.
-- 🔥 Automatically deletes abusive messages.
-- 🛡️ Works in group chats to maintain a safe environment.
-- ⚙️ Lightweight and easy to host.
+- 🧠 Automatically filters abusive and profane messages
+- 🧹 Auto-delete messages with bad words in real time
+- 🛡️ Protects Telegram group members
+- ⚡️ Simple setup and blazing fast
+- ☁️ Ready to deploy on **Koyeb**, **Render**, **Railway**, etc.
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Deploy to Koyeb
 
-### 1. Clone the repo
+1. Fork this repository
+2. Go to [Koyeb](https://app.koyeb.com/)
+3. Click **Create App**
+4. Choose:
+   - GitHub → your forked repo
+   - Buildpack: `python`
+   - Add this environment variable:
+     ```
+     BOT_TOKEN = your_telegram_bot_token
+     ```
+5. Deploy 🚀
+
+---
+
+## 🛠 Manual Setup (Local)
+
 ```bash
 git clone https://github.com/yourusername/Groupabusebot.git
 cd Groupabusebot
-```
-
-### 2. Install dependencies
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure Bot Token
-
-Open `main.py` and add your Telegram bot token:
+Edit `main.py` and paste your Telegram Bot token:
 ```python
-updater = Updater("YOUR_BOT_TOKEN_HERE", use_context=True)
+updater = Updater("YOUR_BOT_TOKEN", use_context=True)
 ```
 
-### 4. Run the bot
+Run it:
 ```bash
 python main.py
 ```
 
 ---
 
-## 🧩 Files Explained
+## 🧩 File Structure
 
-| File | Description |
-|------|-------------|
-| `main.py` | Main logic to start the bot and handle messages |
-| `profanity_filter.py` | List of abusive words and filtering logic |
-| `requirements.txt` | Python dependencies list |
-
----
-
-## 📬 Contact & Updates
-
-- 👤 **Owner**: [@asbhaibsr](https://t.me/asbhaibsr)
-- 📢 **Updates**: [@asbhai_bsr](https://t.me/asbhai_bsr)
+| File | Purpose |
+|------|---------|
+| `main.py` | Main bot logic and message handling |
+| `profanity_filter.py` | Word filter logic and abusive words |
+| `requirements.txt` | Python package list |
 
 ---
 
-## 💖 Support
+## 📞 Contact & Support
 
-If this bot helps your community, consider sharing or starring the project on GitHub!
+<p align="center">
+  <a href="https://t.me/asbhaibsr">
+    <img src="https://img.shields.io/badge/👨‍💻 Contact-%40asbhaibsr-blue?style=for-the-badge&logo=telegram" />
+  </a>
+  <a href="https://t.me/asbhai_bsr">
+    <img src="https://img.shields.io/badge/📢 Update+Channel-%40asbhai__bsr-orange?style=for-the-badge&logo=telegram" />
+  </a>
+</p>
 
+---
+
+## 💖 Support This Project
+
+If you like this bot, give it a ⭐️ on GitHub, share it with others, or contribute to improve it!
+
+---
+
+> Made with ❤️ by [@asbhaibsr](https://t.me/asbhaibsr)
