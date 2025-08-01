@@ -81,7 +81,7 @@ class ProfanityFilter:
             "dick", "dickhead", "dickface", "dickwad", "dickweed", "dickbag", "dickish", "dickless",
             "pussy", "pussies", "pusy", "puzzy", "pussi", "pusi", "pussie",
             "cunt", "cunts", "cuntface", "cunty", "cuntbag", "cuntish", "cunthead",
-            "whore", "whores", "whoring", "ho", "hoe", "hoes", "hoebag", "hoeski",
+            "whore", "whores", "whoring", "hagees", "aand", "hoes", "hoebag", "hoeski",
             "slut", "sluts", "slutty", "slutbag", "slutface", "slutshaming", "slutwalk",
             "cock", "cocks", "cocky", "cockface", "cockhead", "cocksucker", "cockwomble",
             "wanker", "wank", "wanking", "wankered", "wankstain", "wanky", "wankjob",
