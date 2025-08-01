@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=2500&pause=1200&center=true&vCenter=true&width=435&lines=🚫+Group+Abuse+Filter+Bot+🚫;⚡+Clean+Telegram+Groups+with+One+Bot!;🛡️+Auto+Remove+Bad+Words;☁️+Deploy+on+Koyeb+in+1+Click!">
-</p>
+<h1 align="center">🚫 Group Abuse Filter Bot 🚫</h1>
+
+<p align="center"><i>Clean your Telegram groups automatically using smart word filters and admin tools.</i></p>
 
 <p align="center">
   <a href="https://t.me/asbhaibsr">
@@ -18,29 +18,31 @@
 - ✅ Auto-detect and delete abusive messages
 - 🔐 Real-time monitoring of group chats
 - 🧠 Works with MongoDB + Logging system
-- 🔁 Deployable on **Koyeb**, **Render**, etc.
-- 👑 Admin-only commands for control and moderation
+- ☁️ Deployable on Koyeb, Render, Railway
+- 👑 Admin-only commands for full control
 
 ---
 
 ## 🚀 Deploy to Koyeb
 
-1. Fork this repo
+1. **Fork this repo**
 2. Go to [Koyeb Dashboard](https://app.koyeb.com/)
-3. Create New App:
-   - Source: GitHub (your fork)
-   - Buildpack: `python`
-4. Set environment variables:
-   ```
-   TELEGRAM_BOT_TOKEN = <your_bot_token>
-   MONGO_DB_URI = <your_mongo_connection_uri>
-   GROUP_ADMIN_USERNAME = yourgroupadmin
-   ```
-5. Click **Deploy** 🎉
+3. Click "Create App"
+4. Connect GitHub and select your repo
+5. Set build type as `Python`
+6. Add the following environment variables:
+
+```
+TELEGRAM_BOT_TOKEN=your_bot_token
+MONGO_DB_URI=your_mongodb_connection
+GROUP_ADMIN_USERNAME=your_admin_username
+```
+
+7. Click **Deploy** — done! 🚀
 
 ---
 
-## 🛠 Manual Setup
+## 🛠 Manual Setup (Local)
 
 ```bash
 git clone https://github.com/yourusername/Groupabusebot.git
@@ -48,7 +50,9 @@ cd Groupabusebot
 pip install -r requirements.txt
 ```
 
-Edit `main.py` and set your tokens if not using `.env`.
+Edit your token inside `main.py` or use environment variables.
+
+Then run:
 
 ```bash
 python main.py
@@ -56,47 +60,47 @@ python main.py
 
 ---
 
-## 💬 Telegram Bot Commands
+## 💬 Admin Commands
 
-> All commands below are available to **admin users only**:
+> Only allowed for users listed in `ADMIN_USER_IDS` inside `main.py`
 
 ```
-/start              - Check bot is online
-/stats             - Get usage stats
-/broadcast <msg>   - Send message to all users
-/addabuse <word>   - Add abusive word to filter
-/delabuse <word>   - Remove word from filter
-/listabuse         - Show blocked words
-/help              - Show help message
+/start              - Check if bot is working
+/help               - Show help message
+/stats              - View bot stats
+/broadcast <msg>    - Send a message to all users
+/addabuse <word>    - Add abusive word to blocklist
+/delabuse <word>    - Remove a word from blocklist
+/listabuse          - Show current blocked words
 ```
 
 ---
 
-## 📦 Logs and Usage Flow
+## 📦 Logs & Case Handling
 
-| Type      | Where it goes | Description |
-|-----------|---------------|-------------|
-| **Logs**  | `LOG_CHANNEL_ID` | Bot logs (user joins, commands) |
-| **Cases** | `CASE_CHANNEL_ID` | Any abusive message detected goes here |
-| **Warnings** | Group itself | User gets warned + message deleted |
-| **Admin Alerts** | Logs & Mention | Admins get pinged in critical events |
+| Type        | Sent To           | Description |
+|-------------|-------------------|-------------|
+| Logs        | `LOG_CHANNEL_ID`  | All general bot actions |
+| Abuse Cases | `CASE_CHANNEL_ID` | Messages with abuse |
+| Warning     | In Group Chat     | User warned, message deleted |
+| Admin Ping  | In Group          | Admin mentioned if needed |
 
-🧪 You can change log/case channels from `main.py` or set them via environment variables.
-
----
-
-## 🧾 File Breakdown
-
-| File | Purpose |
-|------|---------|
-| `main.py` | Core bot logic |
-| `profanity_filter.py` | Bad word filtering |
-| `requirements.txt` | Python packages |
-| `.env (optional)` | Store your secrets for Koyeb/local |
+You can configure all IDs inside `main.py` or through Koyeb env variables.
 
 ---
 
-## 🙋‍♂️ Support & Contact
+## 🧾 File Structure
+
+| File                | Description                          |
+|---------------------|--------------------------------------|
+| `main.py`           | Main bot logic                       |
+| `profanity_filter.py` | Words list and filter logic        |
+| `requirements.txt`  | Python dependencies                  |
+| `.env` (optional)   | Store secrets for local dev or Koyeb |
+
+---
+
+## 🙋‍♂️ Contact & Support
 
 <p align="center">
   <a href="https://t.me/asbhaibsr">
@@ -109,8 +113,8 @@ python main.py
 
 ---
 
-## 🧡 Like This Project?
+## ⭐️ Like This Project?
 
-Give it a ⭐️ on GitHub and share with your friends.
+Star the repo, share with friends, or contribute!
 
-> Made with 💻 by [@asbhaibsr](https://t.me/asbhaibsr)
+> Made with ❤️ by [@asbhaibsr](https://t.me/asbhaibsr)
