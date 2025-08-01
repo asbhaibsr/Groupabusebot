@@ -1,9 +1,8 @@
-<h1 align="center">
-  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=30&pause=1000&center=true&vCenter=true&width=435&lines=🚫+Group+Abuse+Filter+Bot+🚫;Keep+your+Telegram+groups+clean+and+safe!">
-</h1>
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=2500&pause=1200&center=true&vCenter=true&width=435&lines=🚫+Group+Abuse+Filter+Bot+🚫;⚡+Clean+Telegram+Groups+with+One+Bot!;🛡️+Auto+Remove+Bad+Words;☁️+Deploy+on+Koyeb+in+1+Click!">
+</p>
 
 <p align="center">
-  <b>A smart Telegram bot that automatically detects and removes abusive messages from groups using a profanity filter.</b><br><br>
   <a href="https://t.me/asbhaibsr">
     <img src="https://img.shields.io/badge/👤 Owner-%40asbhaibsr-blue?style=for-the-badge&logo=telegram" />
   </a>
@@ -16,31 +15,32 @@
 
 ## ✨ Features
 
-- 🧠 Automatically filters abusive and profane messages
-- 🧹 Auto-delete messages with bad words in real time
-- 🛡️ Protects Telegram group members
-- ⚡️ Simple setup and blazing fast
-- ☁️ Ready to deploy on **Koyeb**, **Render**, **Railway**, etc.
+- ✅ Auto-detect and delete abusive messages
+- 🔐 Real-time monitoring of group chats
+- 🧠 Works with MongoDB + Logging system
+- 🔁 Deployable on **Koyeb**, **Render**, etc.
+- 👑 Admin-only commands for control and moderation
 
 ---
 
 ## 🚀 Deploy to Koyeb
 
-1. Fork this repository
-2. Go to [Koyeb](https://app.koyeb.com/)
-3. Click **Create App**
-4. Choose:
-   - GitHub → your forked repo
+1. Fork this repo
+2. Go to [Koyeb Dashboard](https://app.koyeb.com/)
+3. Create New App:
+   - Source: GitHub (your fork)
    - Buildpack: `python`
-   - Add this environment variable:
-     ```
-     BOT_TOKEN = your_telegram_bot_token
-     ```
-5. Deploy 🚀
+4. Set environment variables:
+   ```
+   TELEGRAM_BOT_TOKEN = <your_bot_token>
+   MONGO_DB_URI = <your_mongo_connection_uri>
+   GROUP_ADMIN_USERNAME = yourgroupadmin
+   ```
+5. Click **Deploy** 🎉
 
 ---
 
-## 🛠 Manual Setup (Local)
+## 🛠 Manual Setup
 
 ```bash
 git clone https://github.com/yourusername/Groupabusebot.git
@@ -48,29 +48,55 @@ cd Groupabusebot
 pip install -r requirements.txt
 ```
 
-Edit `main.py` and paste your Telegram Bot token:
-```python
-updater = Updater("YOUR_BOT_TOKEN", use_context=True)
-```
+Edit `main.py` and set your tokens if not using `.env`.
 
-Run it:
 ```bash
 python main.py
 ```
 
 ---
 
-## 🧩 File Structure
+## 💬 Telegram Bot Commands
 
-| File | Purpose |
-|------|---------|
-| `main.py` | Main bot logic and message handling |
-| `profanity_filter.py` | Word filter logic and abusive words |
-| `requirements.txt` | Python package list |
+> All commands below are available to **admin users only**:
+
+```
+/start              - Check bot is online
+/stats             - Get usage stats
+/broadcast <msg>   - Send message to all users
+/addabuse <word>   - Add abusive word to filter
+/delabuse <word>   - Remove word from filter
+/listabuse         - Show blocked words
+/help              - Show help message
+```
 
 ---
 
-## 📞 Contact & Support
+## 📦 Logs and Usage Flow
+
+| Type      | Where it goes | Description |
+|-----------|---------------|-------------|
+| **Logs**  | `LOG_CHANNEL_ID` | Bot logs (user joins, commands) |
+| **Cases** | `CASE_CHANNEL_ID` | Any abusive message detected goes here |
+| **Warnings** | Group itself | User gets warned + message deleted |
+| **Admin Alerts** | Logs & Mention | Admins get pinged in critical events |
+
+🧪 You can change log/case channels from `main.py` or set them via environment variables.
+
+---
+
+## 🧾 File Breakdown
+
+| File | Purpose |
+|------|---------|
+| `main.py` | Core bot logic |
+| `profanity_filter.py` | Bad word filtering |
+| `requirements.txt` | Python packages |
+| `.env (optional)` | Store your secrets for Koyeb/local |
+
+---
+
+## 🙋‍♂️ Support & Contact
 
 <p align="center">
   <a href="https://t.me/asbhaibsr">
@@ -83,10 +109,8 @@ python main.py
 
 ---
 
-## 💖 Support This Project
+## 🧡 Like This Project?
 
-If you like this bot, give it a ⭐️ on GitHub, share it with others, or contribute to improve it!
+Give it a ⭐️ on GitHub and share with your friends.
 
----
-
-> Made with ❤️ by [@asbhaibsr](https://t.me/asbhaibsr)
+> Made with 💻 by [@asbhaibsr](https://t.me/asbhaibsr)
