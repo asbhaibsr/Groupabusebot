@@ -1076,14 +1076,13 @@ def run_bot():
         # Message Handlers
         application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP) & ~filters.Update.EDITED_MESSAGE,
+            filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
             handle_all_messages
         ))
         application.add_handler(MessageHandler(
             (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) &
             filters.ChatType.PRIVATE & 
-            filters.User(user_id=ADMIN_USER_IDS) &
-            ~filters.Update.EDITED_MESSAGE, 
+            filters.User(user_id=ADMIN_USER_IDS), 
             handle_broadcast_message
         ))
         # Edited Message Handler
