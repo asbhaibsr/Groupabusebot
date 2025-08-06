@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, constants
 from telegram.ext import (
     CommandHandler, MessageHandler, filters, CallbackContext,
-    CallbackQueryHandler, Application, EditedMessageHandler
+    CallbackQueryHandler, Application
 )
 
 # Custom module import
@@ -679,7 +679,7 @@ async def tag_stop(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error in /tagstop command: {e}")
         await update.message.reply_text(f"टैगिंग रोकते समय एक error हुई: {e}")
 
-# --- Core Message Handler (Profanity, Bio Link, Edited Messages) ---
+# --- Core Message Handler (Profanity, Bio Link) ---
 async def handle_all_messages(update: Update, context: CallbackContext) -> None:
     message = update.message
     user = message.from_user
@@ -730,6 +730,7 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
+    # Check for admin status if the action is group-related
     if query.message.chat.type in ['group', 'supergroup']:
         is_current_group_admin = await is_group_admin(chat_id, user_id, context)
         if not is_current_group_admin:
@@ -820,6 +821,9 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
         target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
         target_user_name = target_user.user.full_name
         
+        # Check if the user is already an exception
+        is_biolink_approved = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": target_user_id})
+
         actions_text = (
             f"<b>{target_user_name}</b> ({target_user_id}) ke liye actions:\n"
             f"Group: {query.message.chat.title}"
@@ -831,10 +835,54 @@ async def button_callback_handler(update: Update, context: CallbackContext) -> N
             [InlineKeyboardButton("🚫 Ban", callback_data=f"ban_{target_user_id}_{group_chat_id}")],
             [InlineKeyboardButton("🦵 Kick", callback_data=f"kick_{target_user_id}_{group_chat_id}")],
             [InlineKeyboardButton("❗ Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
-            [InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")]
         ]
+        
+        # Add the new button for bio-link approval
+        if is_biolink_approved:
+            actions_keyboard.append([InlineKeyboardButton("✅ Approved Bio User", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
+        else:
+            actions_keyboard.append([InlineKeyboardButton("✍️ Approved Bio User", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
+
+        actions_keyboard.append([InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")])
+        
         reply_markup = InlineKeyboardMarkup(actions_keyboard)
         await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode='HTML')
+        
+    elif data.startswith("approve_bio_"):
+        parts = data.split('_')
+        target_user_id = int(parts[2])
+        group_chat_id = int(parts[3])
+
+        if db is None or db.biolink_exceptions is None:
+            await query.edit_message_text("Database connection available nahi hai. Bio link exception add nahi kar sakte.")
+            return
+
+        try:
+            db.biolink_exceptions.insert_one({"user_id": target_user_id})
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
+            await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list mein add kar diya gaya hai. Ab se inke messages delete nahi honge.", parse_mode='HTML')
+            logger.info(f"Admin {user_id} approved bio link for user {target_user_id}.")
+        except Exception as e:
+            await query.edit_message_text(f"Bio link exception add karte samay error hui: {e}")
+            logger.error(f"Error adding bio link exception for user {target_user_id}: {e}")
+
+    elif data.startswith("unapprove_bio_"):
+        parts = data.split('_')
+        target_user_id = int(parts[2])
+        group_chat_id = int(parts[3])
+        
+        if db is None or db.biolink_exceptions is None:
+            await query.edit_message_text("Database connection available nahi hai. Bio link exception remove nahi kar sakte.")
+            return
+            
+        try:
+            db.biolink_exceptions.delete_one({"user_id": target_user_id})
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
+            await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list se hata diya gaya hai. Ab se inke messages delete honge agar bio mein link hoga.", parse_mode='HTML')
+            logger.info(f"Admin {user_id} removed bio link approval for user {target_user_id}.")
+        except Exception as e:
+            await query.edit_message_text(f"Bio link exception remove karte samay error hui: {e}")
+            logger.error(f"Error removing bio link exception for user {target_user_id}: {e}")
 
     elif data.startswith("mute_"):
         parts = data.split('_')
@@ -1028,18 +1076,19 @@ def run_bot():
         # Message Handlers
         application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+            filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP) & ~filters.Update.EDITED_MESSAGE,
             handle_all_messages
         ))
         application.add_handler(MessageHandler(
             (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) &
             filters.ChatType.PRIVATE & 
-            filters.User(user_id=ADMIN_USER_IDS), 
+            filters.User(user_id=ADMIN_USER_IDS) &
+            ~filters.Update.EDITED_MESSAGE, 
             handle_broadcast_message
         ))
         # Edited Message Handler
-        application.add_handler(EditedMessageHandler(
-            filters.TEXT & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+        application.add_handler(MessageHandler(
+            filters.Update.EDITED_MESSAGE,
             handle_edited_messages
         ))
 
@@ -1058,3 +1107,4 @@ if __name__ == "__main__":
     flask_thread.daemon = True
     flask_thread.start()
     run_bot()
+
