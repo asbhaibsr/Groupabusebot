@@ -1,5 +1,6 @@
 Flask
 pyrogram==2.0.106
+motor
 ProfanityFilter
 pymongo
 dnspython==2.6.0
