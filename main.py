@@ -351,8 +351,8 @@ async def broadcast_command(client: Client, message: Message) -> None:
     BROADCAST_MESSAGE[message.from_user.id] = "waiting_for_message"
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
-# CORRECTED LINE
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command)
+# FIXED LINE HERE
+@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command())
 async def handle_broadcast_message(client: Client, message: Message) -> None:
     user = message.from_user
     
