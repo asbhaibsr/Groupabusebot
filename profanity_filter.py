@@ -200,4 +200,3 @@ class ProfanityFilter:
             if re.search(r'\b' + re.escape(word) + r'\b', text):
                 return True
         return False
-
