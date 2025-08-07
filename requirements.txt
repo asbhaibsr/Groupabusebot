@@ -1,4 +1,5 @@
 Flask
-python-telegram-bot==21.3.0  # इसे 20.0 या नवीनतम स्थिर संस्करण पर सेट करें
+pyrogram==2.0.106
+ProfanityFilter
 pymongo
 dnspython==2.6.0
