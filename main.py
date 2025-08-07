@@ -713,7 +713,7 @@ async def remove_biolink_whitelist(user_id: int):
 
 
 # --- Core Message Handler (Profanity, Bio Link, URL in message) ---
-@client.on_message(filters.text & (filters.group) & ~filters.command & ~filters.via_bot)
+@client.on_message(filters.text & filters.group & ~filters.command([]) & ~filters.via_bot)
 async def handle_all_messages(client: Client, message: Message) -> None:
     user = message.from_user
     chat = message.chat
