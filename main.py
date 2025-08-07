@@ -5,7 +5,7 @@ import threading
 import asyncio
 import logging
 import re
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -111,11 +111,10 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
     """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
-        # Handle different Pyrogram versions' ChatMemberStatus representation
-        if isinstance(member.status, enums.ChatMemberStatus):
-            return member.status in [enums.ChatMemberStatus.CREATOR, enums.ChatMemberStatus.ADMINISTRATOR]
+        # Handle both string and enum status representations
+        if hasattr(enums, 'ChatMemberStatus'):
+            return member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]
         else:
-            # Fallback for older Pyrogram versions
             return member.status in ["creator", "administrator"]
     except (BadRequest, Forbidden):
         return False
@@ -128,8 +127,10 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     if LOG_CHANNEL_ID is not None:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
+        except (BadRequest, Forbidden) as e:
+            logger.error(f"Cannot send to log channel: {e}. Channel may not exist or bot lacks permissions.")
         except Exception as e:
-            logger.error(f"Error logging to channel {LOG_CHANNEL_ID}: {e}")
+            logger.error(f"Error logging to channel: {e}")
     else:
         logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
@@ -142,7 +143,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     try:
         await client.delete_messages(chat_id=chat_id, message_ids=original_message_id)
-        logger.info(f"Deleted {reason} message from {user.username or user.full_name} ({user.id}) in {chat_id}.")
+        logger.info(f"Deleted {reason} message from {user.username or user.mention} ({user.id}) in {chat_id}.")
     except Exception as e:
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
@@ -257,7 +258,7 @@ async def start(client: Client, message: Message) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 **Promotion**", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 <b>Promotion</b>", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text(
@@ -288,13 +289,14 @@ async def start(client: Client, message: Message) -> None:
 
     elif chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         try:
-            bot_member = await client.get_chat_member(chat.id, bot_info.id)
+            bot_info = await client.get_me()
+            bot_username = bot_info.username
             add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
             
             if await is_group_admin(chat.id, bot_info.id):
-                group_start_message = f"Hello! Main <b>{bot_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
+                group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
             else:
-                group_start_message = f"Hello! Main <b>{bot_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
+                group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
             
             group_keyboard = [
                 [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
@@ -703,7 +705,7 @@ async def increment_warnings(user_id: int, chat_id: int):
         {"user_id": user_id, "chat_id": chat_id},
         {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
         upsert=True,
-        return_document='after'
+        return_document=ReturnDocument.AFTER
     )
     return warnings_doc['count'] if warnings_doc else 1
 
@@ -1103,7 +1105,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 {"user_id": target_user_id, "chat_id": group_chat_id},
                 {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
                 upsert=True,
-                return_document='after'
+                return_document=ReturnDocument.AFTER
             )
             warn_count = warnings_doc['count'] if warnings_doc else 1
             
