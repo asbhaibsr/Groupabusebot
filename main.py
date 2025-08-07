@@ -111,7 +111,6 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
     """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
-        # Handle both string and enum status representations
         if hasattr(enums, 'ChatMemberStatus'):
             return member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]
         else:
@@ -182,7 +181,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             db.incidents.insert_one({
                 "case_id": case_id,
                 "user_id": user.id,
-                "user_name": user.full_name,
+                "user_name": user.mention,
                 "user_username": user.username,
                 "chat_id": chat_id,
                 "chat_title": original_message.chat.title,
@@ -258,7 +257,7 @@ async def start(client: Client, message: Message) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 <b>Promotion</b>", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text(
@@ -314,7 +313,7 @@ async def start(client: Client, message: Message) -> None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
-                        {"$set": {"title": chat.title, "type": chat.type, "last_active": datetime.now()}},
+                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now()}},
                         upsert=True
                     )
                 except Exception as e:
@@ -488,7 +487,7 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         return
     if profanity_filter is not None:
         try:
-            if profanity_filter.add_bad_word(word_to_add):
+            if await profanity_filter.add_bad_word(word_to_add):
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
             else:
@@ -524,7 +523,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
-                        {"$set": {"title": chat.title, "type": chat.type, "last_active": datetime.now()}},
+                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now()}},
                         upsert=True
                     )
                 except Exception as e:
@@ -557,9 +556,9 @@ async def tag_all(client: Client, message: Message) -> None:
     
     try:
         members_count = await client.get_chat_members_count(chat_id)
-        message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "<b>Attention Everyone!</b>"
+        message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
         
-        final_message = f"<b>Is group mein {members_count} members hain.</b>\n\n<b>Message:</b> {message_text}"
+        final_message = f"Is group mein {members_count} members hain.\n\nMessage: {message_text}"
         
         sent_message = await message.reply_text(
             final_message,
@@ -582,7 +581,7 @@ async def tag_online(client: Client, message: Message) -> None:
         return
         
     try:
-        online_message = "<b>Online users ko tag karne ki suvidha ab Telegram API mein nahi hai.</b>"
+        online_message = "Online users ko tag karne ki suvidha ab Telegram API mein nahi hai."
         await message.reply_text(online_message, parse_mode=enums.ParseMode.HTML)
         
     except Exception as e:
@@ -597,7 +596,7 @@ async def tag_admins(client: Client, message: Message) -> None:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
         
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "<b>Admins, attention please!</b>"
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Admins, attention please!"
     chat_id = message.chat.id
 
     try:
@@ -614,7 +613,7 @@ async def tag_admins(client: Client, message: Message) -> None:
             TAG_MESSAGES[chat_id] = []
 
         sent_message = await message.reply_text(
-            f"{tag_message_text}\n\n<b>Message:</b> {message_text}",
+            f"{tag_message_text}\n\nMessage: {message_text}",
             parse_mode=enums.ParseMode.HTML
         )
         TAG_MESSAGES[chat_id].append(sent_message.id)
@@ -644,10 +643,10 @@ async def tag_stop(client: Client, message: Message) -> None:
         bot_username = bot_info.username
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
         
-        final_message_text = "<b>यह टैगिंग खत्म हो गया है।</b>"
+        final_message_text = "यह टैगिंग खत्म हो गया है।"
         
         keyboard = [
-            [InlineKeyboardButton("➕ <b>मुझे ग्रुप में जोड़ें</b>", url=add_to_group_url)],
+            [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
             [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -941,7 +940,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 <b>Promotion</b>", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
@@ -952,12 +951,12 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[4])
         
         target_user = await client.get_chat_member(group_chat_id, target_user_id)
-        target_user_name = target_user.user.full_name
+        target_user_mention = target_user.user.mention
         
         is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
-            f"<b>{target_user_name}</b> ({target_user_id}) ke liye actions:\n"
+            f"{target_user_mention} ({target_user_id}) ke liye actions:\n"
             f"Group: {query.message.chat.title}"
         )
         actions_keyboard = [
@@ -981,6 +980,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
     elif data.startswith("approve_bio_"):
         target_user_id = int(data.split('_')[2])
+        chat_id = int(data.split('_')[3])
         await add_biolink_whitelist(target_user_id)
         await reset_warnings(target_user_id, chat_id)
         
@@ -1004,6 +1004,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
     elif data.startswith("unapprove_bio_"):
         target_user_id = int(data.split('_')[2])
+        chat_id = int(data.split('_')[3])
         await remove_biolink_whitelist(target_user_id)
 
         target_user = await client.get_chat_member(chat_id, target_user_id)
