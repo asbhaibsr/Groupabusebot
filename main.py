@@ -7,27 +7,26 @@ import logging
 import re
 from pymongo import MongoClient
 from telegram.error import BadRequest, Forbidden, TelegramError
+
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, constants
 from telegram.ext import (
-    CommandHandler, MessageHandler, filters, Application,
-    CallbackQueryHandler
+    CommandHandler, MessageHandler, filters, CallbackContext,
+    CallbackQueryHandler, Application
 )
 
 # Custom module import
-try:
-    from profanity_filter import ProfanityFilter
-except ImportError:
-    ProfanityFilter = None
-    logging.warning("profanity_filter.py module not found. Profanity filtering will be disabled.")
+# Ensure this file (profanity_filter.py) is present in your deployment
+from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "-1002352329534") # Replace with your actual log channel ID
-CASE_CHANNEL_ID = os.getenv("CASE_CHANNEL_ID", "-1002717243409") # Replace with your actual case channel ID
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "AbusersDetector") # Replace with your actual username
+LOG_CHANNEL_ID = -1002352329534
+CASE_CHANNEL_ID = -1002717243409
+CASE_CHANNEL_USERNAME = "AbusersDetector"
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-ADMIN_USER_IDS = [7315805581] # Add your user ID here
+GROUP_ADMIN_USERNAME = os.getenv("GROUP_ADMIN_USERNAME", "admin")
+ADMIN_USER_IDS = [7315805581]
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
@@ -55,10 +54,8 @@ profanity_filter = None
 def init_mongodb():
     global mongo_client, db, profanity_filter
     if MONGO_DB_URI is None:
-        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB.")
-        if ProfanityFilter:
-            profanity_filter = ProfanityFilter(mongo_uri=None)
-            logger.warning("Profanity filter will use a default list due to MongoDB connection error.")
+        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
+        profanity_filter = ProfanityFilter(mongo_uri=None)
         return
 
     try:
@@ -86,28 +83,24 @@ def init_mongodb():
         # New collection for warnings
         if "warnings" not in collection_names:
             db.create_collection("warnings")
-        db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=False)
+        db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
         
-        if ProfanityFilter:
-            profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
-            logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
-        else:
-            logger.warning("profanity_filter.py module not found. Profanity filtering is disabled.")
+        profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
+        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}.")
-        if ProfanityFilter:
-            profanity_filter = ProfanityFilter(mongo_uri=None)
-            logger.warning("Falling back to default profanity list due to MongoDB connection error.")
+        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
+        profanity_filter = ProfanityFilter(mongo_uri=None)
+        logger.warning("Falling back to default profanity list due to MongoDB connection error.")
 
 # --- Helper Functions ---
 def is_admin(user_id: int) -> bool:
     """Checks if the given user_id is a bot admin."""
     return user_id in ADMIN_USER_IDS
 
-async def is_group_admin(chat_id: int, user_id: int, application: Application) -> bool:
+async def is_group_admin(chat_id: int, user_id: int, context: CallbackContext) -> bool:
     """Checks if the given user_id is an admin in the specified chat."""
     try:
-        member = await application.bot.get_chat_member(chat_id, user_id)
+        member = await context.bot.get_chat_member(chat_id, user_id)
         return member.status in ['creator', 'administrator']
     except Exception as e:
         logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
@@ -123,24 +116,36 @@ async def log_to_channel(text: str, parse_mode: str = None) -> None:
     else:
         logger.warning("Application not initialized or LOG_CHANNEL_ID is not set, cannot log to channel.")
 
-async def handle_incident(update: Update, application: Application, reason: str, case_type: str, message=None):
-    """Common function to handle all incidents (abuse, link, edited message)."""
-    if message is None:
-        message = update.message if update.message else update.edited_message
-        if not message:
-            return
+async def notify_all_admins(chat_id: int, message: str, context: CallbackContext, reply_markup=None):
+    """Notifies all admins in a group about an incident."""
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+        for admin in admins:
+            if not admin.user.is_bot:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin.user.id,
+                        text=message,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Could not send admin notification to {admin.user.id}: {e}")
+    except Exception as e:
+        logger.error(f"Error getting admins for chat {chat_id}: {e}")
 
-    chat = message.chat
-    user = message.from_user
-    original_message_id = message.message_id
-    message_text = message.text or "No text content"
-    case_id = str(int(datetime.now().timestamp() * 1000))
+async def handle_incident(context: CallbackContext, chat_id, user, reason, original_message, case_type, case_id=None):
+    """Common function to handle all incidents (abuse, bio link, edited message)."""
+    original_message_id = original_message.message_id
+    message_text = original_message.text or "No text content"
+    if not case_id:
+        case_id = str(int(datetime.now().timestamp() * 1000))
 
     try:
-        await application.bot.delete_message(chat_id=chat.id, message_id=original_message_id)
-        logger.info(f"Deleted {reason} message from {user.username or user.full_name} ({user.id}) in {chat.id}.")
+        await context.bot.delete_message(chat_id=chat_id, message_id=original_message_id)
+        logger.info(f"Deleted {reason} message from {user.username or user.full_name} ({user.id}) in {chat_id}.")
     except Exception as e:
-        logger.error(f"Error deleting message in {chat.id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
+        logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
     sent_details_msg = None
     forwarded_message_id = None
@@ -149,7 +154,7 @@ async def handle_incident(update: Update, application: Application, reason: str,
     try:
         details_message_text = (
             f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
-            f"<b>📍 ग्रुप:</b> {chat.title} (<code>{chat.id}</code>)\n"
+            f"<b>📍 ग्रुप:</b> {original_message.chat.title} (<code>{chat_id}</code>)\n"
             f"<b>👤 यूज़र:</b> {user.mention_html()} (<code>{user.id}</code>)\n"
             f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
             f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
@@ -157,7 +162,7 @@ async def handle_incident(update: Update, application: Application, reason: str,
             f"<b>➡️ कारण:</b> {reason}\n"
             f"<b>➡️ मूल मैसेज:</b> ||{message_text}||\n"
         )
-        sent_details_msg = await application.bot.send_message(
+        sent_details_msg = await context.bot.send_message(
             chat_id=CASE_CHANNEL_ID,
             text=details_message_text,
             parse_mode='HTML'
@@ -179,8 +184,8 @@ async def handle_incident(update: Update, application: Application, reason: str,
                 "user_id": user.id,
                 "user_name": user.full_name,
                 "user_username": user.username,
-                "chat_id": chat.id,
-                "chat_title": chat.title,
+                "chat_id": chat_id,
+                "chat_title": original_message.chat.title,
                 "original_message_id": original_message_id,
                 "abusive_content": message_text,
                 "timestamp": datetime.now(),
@@ -194,7 +199,7 @@ async def handle_incident(update: Update, application: Application, reason: str,
 
     # Enhanced notification message
     notification_message = (
-        f"🚨 <b>Group में नियम उल्लंघन!</b>\n\n"
+        f"🚨 **Group में Niyam Ulanghan!**\n\n"
         f"➡️ <b>User:</b> {user.mention_html()}\n"
         f"➡️ <b>Reason:</b> \"{reason} की वजह से मैसेज हटा दिया गया है।\"\n\n"
         f"➡️ <b>Case ID:</b> <code>{case_id}</code>"
@@ -203,7 +208,7 @@ async def handle_incident(update: Update, application: Application, reason: str,
     keyboard = [
         [
             InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
-            InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat.id}")
+            InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat_id}")
         ],
         [
             InlineKeyboardButton("📄 View Case Details", url=case_detail_url)
@@ -212,21 +217,30 @@ async def handle_incident(update: Update, application: Application, reason: str,
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await application.bot.send_message(
-            chat_id=chat.id,
+        await context.bot.send_message(
+            chat_id=chat_id,
             text=notification_message,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        logger.info(f"Incident notification sent for user {user.id} in chat {chat.id}.")
+        logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
     except Exception as e:
-        logger.error(f"Error sending notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
+        logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
+        # Fallback to a simpler message if HTML parsing fails or other issues occur
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"User {user.id} का मैसेज हटा दिया गया है। कारण: {reason}"
+            )
+        except Exception as simple_e:
+            logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
 
 # --- Bot Commands Handlers ---
-async def start(update: Update, application: Application) -> None:
+async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     chat = update.message.chat
-    bot_info = await application.bot.get_me()
+
+    bot_info = await context.bot.get_me()
     bot_name = bot_info.first_name
     bot_username = bot_info.username
 
@@ -245,17 +259,18 @@ async def start(update: Update, application: Application) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 **Promotion**", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             text=welcome_message,
             reply_markup=reply_markup,
-            parse_mode='HTML'
+            parse_mode='HTML',
+            disable_web_page_preview=True
         )
         logger.info(f"User {user.first_name} ({user.id}) started the bot in private chat.")
 
-        if db and db.users:
+        if db is not None and db.users is not None:
             try:
                 db.users.update_one(
                     {"user_id": user.id},
@@ -294,7 +309,7 @@ async def start(update: Update, application: Application) -> None:
             parse_mode='HTML'
         )
         logger.info(f"Bot received /start in group: {chat.title} ({chat.id}).")
-        if db and db.groups:
+        if db is not None and db.groups is not None:
             try:
                 db.groups.update_one(
                     {"chat_id": chat.id},
@@ -304,7 +319,7 @@ async def start(update: Update, application: Application) -> None:
             except Exception as e:
                 logger.error(f"Error saving group {chat.id} to DB: {e}")
 
-async def stats(update: Update, application: Application) -> None:
+async def stats(update: Update, context: CallbackContext) -> None:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -312,11 +327,11 @@ async def stats(update: Update, application: Application) -> None:
     total_groups = 0
     total_users = 0
     total_incidents = 0
-    if db:
+    if db is not None:
         try:
-            total_groups = db.groups.count_documents({}) if db.groups else 0
-            total_users = db.users.count_documents({}) if db.users else 0
-            total_incidents = db.incidents.count_documents({}) if db.incidents else 0
+            total_groups = db.groups.count_documents({}) if db.groups is not None else 0
+            total_users = db.users.count_documents({}) if db.users is not None else 0
+            total_incidents = db.incidents.count_documents({}) if db.incidents is not None else 0
         except Exception as e:
             logger.error(f"Error fetching stats from DB: {e}")
             await update.message.reply_text(f"Stats fetch karte samay error hui: {e}")
@@ -333,7 +348,7 @@ async def stats(update: Update, application: Application) -> None:
     await update.message.reply_text(stats_message, parse_mode='HTML')
     logger.info(f"Admin {update.effective_user.id} requested stats.")
 
-async def broadcast_command(update: Update, application: Application) -> None:
+async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -345,10 +360,13 @@ async def broadcast_command(update: Update, application: Application) -> None:
     BROADCAST_MESSAGE[update.effective_user.id] = "waiting_for_message"
     logger.info(f"Admin {update.effective_user.id} initiated broadcast.")
 
-async def handle_broadcast_message(update: Update, application: Application) -> None:
+async def handle_broadcast_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     
-    if not is_admin(user.id) or BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
+    if not is_admin(user.id):
+        return
+    
+    if BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
         return
     
     BROADCAST_MESSAGE[user.id] = update.message
@@ -359,12 +377,17 @@ async def handle_broadcast_message(update: Update, application: Application) -> 
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
-        reply_markup=reply_markup
-    )
+    try:
+        await update.message.reply_text(
+            "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Error sending broadcast confirmation message to {user.id}: {e}")
+        await update.message.reply_text("Broadcast confirmation message bhejne mein error aaya.")
+        BROADCAST_MESSAGE.pop(user.id, None)
 
-async def confirm_broadcast(update: Update, application: Application) -> None:
+async def confirm_broadcast(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -416,7 +439,7 @@ async def confirm_broadcast(update: Update, application: Application) -> None:
 
         for chat_id in target_chats:
             try:
-                await application.bot.copy_message(
+                await context.bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=broadcast_msg.chat.id,
                     message_id=broadcast_msg.message_id
@@ -441,7 +464,7 @@ async def confirm_broadcast(update: Update, application: Application) -> None:
     else:
         await query.edit_message_text("Broadcast message not found.")
 
-async def cancel_broadcast(update: Update, application: Application) -> None:
+async def cancel_broadcast(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -451,14 +474,14 @@ async def cancel_broadcast(update: Update, application: Application) -> None:
     
     await query.edit_message_text("❌ Broadcast cancel kar diya gaya hai.")
 
-async def add_abuse_word(update: Update, application: Application) -> None:
+async def add_abuse_word(update: Update, context: CallbackContext) -> None:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
-    if not application.args:
+    if not context.args:
         await update.message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: `/addabuse <shabd>`")
         return
-    word_to_add = " ".join(application.args).lower().strip()
+    word_to_add = " ".join(context.args).lower().strip()
     if not word_to_add:
         await update.message.reply_text("Kripya ek valid shabd dein.")
         return
@@ -476,10 +499,10 @@ async def add_abuse_word(update: Update, application: Application) -> None:
         await update.message.reply_text("Profanity filter initialize nahi hua hai. MongoDB connection mein problem ho sakti hai.")
         logger.error("Profanity filter not initialized, cannot add abuse word.")
 
-async def welcome_new_member(update: Update, application: Application) -> None:
+async def welcome_new_member(update: Update, context: CallbackContext) -> None:
     new_members = update.message.new_chat_members
     chat = update.message.chat
-    bot_info = await application.bot.get_me()
+    bot_info = await context.bot.get_me()
 
     for member in new_members:
         if member.id == bot_info.id:
@@ -494,7 +517,7 @@ async def welcome_new_member(update: Update, application: Application) -> None:
             await log_to_channel(log_message, parse_mode='HTML')
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {update.message.from_user.id}.")
 
-            if db and db.groups:
+            if db is not None and db.groups is not None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
@@ -521,35 +544,37 @@ async def welcome_new_member(update: Update, application: Application) -> None:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
 
 # --- Tagging Commands ---
-async def tag_all(update: Update, application: Application) -> None:
+async def tag_all(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type not in ['group', 'supergroup']:
         await update.message.reply_text("Yeh command sirf groups mein kaam karti hai.")
         return
     
-    is_sender_admin = await is_group_admin(update.message.chat_id, update.effective_user.id, application)
+    is_sender_admin = await is_group_admin(update.message.chat_id, update.effective_user.id, context)
     if not is_sender_admin:
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
     
-    message_text = " ".join(application.args) if application.args else "Attention!"
+    message_text = " ".join(context.args) if context.args else "Attention!"
     chat_id = update.message.chat_id
     
     try:
-        members = await application.bot.get_chat_members(chat_id)
-        tagged_users = [member.user.mention_html() for member in members if not member.user.is_bot]
+        members = []
+        async for member in context.bot.get_chat_members(chat_id):
+            if not member.user.is_bot:
+                members.append(member.user.mention_html())
         
-        if not tagged_users:
+        if not members:
             await update.message.reply_text("Group mein koi members nahi hain jinhe tag kiya ja sake.")
             return
 
-        tag_chunks = [tagged_users[i:i + 10] for i in range(0, len(tagged_users), 10)]
+        tag_chunks = [members[i:i + 10] for i in range(0, len(members), 10)]
         
         if chat_id not in TAG_MESSAGES:
             TAG_MESSAGES[chat_id] = []
         
         for i, chunk in enumerate(tag_chunks):
             tag_message_text = " ".join(f"{TAG_EMOJIS[i % len(TAG_EMOJIS)]} {user}" for i, user in enumerate(chunk))
-            sent_message = await update.message.reply_text(f"{tag_message_text}\n\n<b>Message:</b> {message_text}", parse_mode='HTML')
+            sent_message = await update.message.reply_text(f"{tag_message_text}\n\n**Message:** {message_text}", parse_mode='HTML')
             TAG_MESSAGES[chat_id].append(sent_message.message_id)
             await asyncio.sleep(1)
         
@@ -557,22 +582,22 @@ async def tag_all(update: Update, application: Application) -> None:
         logger.error(f"Error in /tagall command: {e}")
         await update.message.reply_text(f"Tag karte samay error hui: {e}")
 
-async def tag_online(update: Update, application: Application) -> None:
+async def tag_online(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type not in ['group', 'supergroup']:
         await update.message.reply_text("Yeh command sirf groups mein kaam karti hai.")
         return
 
-    is_sender_admin = await is_group_admin(update.message.chat_id, update.effective_user.id, application)
+    is_sender_admin = await is_group_admin(update.message.chat_id, update.effective_user.id, context)
     if not is_sender_admin:
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
         
-    message_text = " ".join(application.args) if application.args else "Attention Online Users!"
+    message_text = " ".join(context.args) if context.args else "Attention Online Users!"
     chat_id = update.message.chat_id
 
     try:
         online_members = []
-        for member in await application.bot.get_chat_members(chat_id):
+        for member in await context.bot.get_chat_members(chat_id):
             if not member.user.is_bot and member.status != 'left' and member.status != 'kicked':
                 online_members.append(member.user.mention_html())
 
@@ -587,7 +612,7 @@ async def tag_online(update: Update, application: Application) -> None:
         
         for i, chunk in enumerate(tag_chunks):
             tag_message_text = " ".join(f"{TAG_EMOJIS[i % len(TAG_EMOJIS)]} {user}" for i, user in enumerate(chunk))
-            sent_message = await update.message.reply_text(f"{tag_message_text}\n\n<b>Message:</b> {message_text}", parse_mode='HTML')
+            sent_message = await update.message.reply_text(f"{tag_message_text}\n\n**Message:** {message_text}", parse_mode='HTML')
             TAG_MESSAGES[chat_id].append(sent_message.message_id)
             await asyncio.sleep(1)
 
@@ -595,16 +620,16 @@ async def tag_online(update: Update, application: Application) -> None:
         logger.error(f"Error in /onlinetag command: {e}")
         await update.message.reply_text(f"Online members ko tag karte samay error hui: {e}")
 
-async def tag_admins(update: Update, application: Application) -> None:
+async def tag_admins(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type not in ['group', 'supergroup']:
         await update.message.reply_text("Yeh command sirf groups mein kaam karti hai.")
         return
         
-    message_text = " ".join(application.args) if application.args else "Admins, attention please!"
+    message_text = " ".join(context.args) if context.args else "Admins, attention please!"
     chat_id = update.message.chat_id
 
     try:
-        admins = await application.bot.get_chat_administrators(chat_id)
+        admins = await context.bot.get_chat_administrators(chat_id)
         tagged_admins = [admin.user.mention_html() for admin in admins if not admin.user.is_bot]
         
         if not tagged_admins:
@@ -617,7 +642,7 @@ async def tag_admins(update: Update, application: Application) -> None:
             TAG_MESSAGES[chat_id] = []
 
         sent_message = await update.message.reply_text(
-            f"{tag_message_text}\n\n<b>Message:</b> {message_text}",
+            f"{tag_message_text}\n\n**Message:** {message_text}",
             parse_mode='HTML'
         )
         TAG_MESSAGES[chat_id].append(sent_message.message_id)
@@ -626,13 +651,13 @@ async def tag_admins(update: Update, application: Application) -> None:
         logger.error(f"Error in /admin command: {e}")
         await update.message.reply_text(f"Admins ko tag karte samay error hui: {e}")
 
-async def tag_stop(update: Update, application: Application) -> None:
+async def tag_stop(update: Update, context: CallbackContext) -> None:
     if update.message.chat.type not in ['group', 'supergroup']:
         await update.message.reply_text("Yeh command sirf groups mein kaam karti hai.")
         return
     
     chat_id = update.message.chat_id
-    is_sender_admin = await is_group_admin(chat_id, update.effective_user.id, application)
+    is_sender_admin = await is_group_admin(chat_id, update.effective_user.id, context)
     if not is_sender_admin:
         await update.message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -644,20 +669,20 @@ async def tag_stop(update: Update, application: Application) -> None:
     try:
         for message_id in TAG_MESSAGES[chat_id]:
             try:
-                await application.bot.delete_message(chat_id, message_id)
+                await context.bot.delete_message(chat_id, message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete tag message {message_id} in {chat_id}: {e}")
         
         TAG_MESSAGES.pop(chat_id)
 
-        bot_info = await application.bot.get_me()
+        bot_info = await context.bot.get_me()
         bot_username = bot_info.username
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
         
-        final_message_text = "✅ <b>यह टैगिंग खत्म हो गया है।</b>"
+        final_message_text = "✅ **यह टैगिंग खत्म हो गया है।**"
         
         keyboard = [
-            [InlineKeyboardButton("➕ <b>मुझे ग्रुप में जोड़ें</b>", url=add_to_group_url)],
+            [InlineKeyboardButton("➕ **मुझे ग्रुप में जोड़ें**", url=add_to_group_url)],
             [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -665,7 +690,7 @@ async def tag_stop(update: Update, application: Application) -> None:
         await update.message.reply_text(
             final_message_text,
             reply_markup=reply_markup,
-            parse_mode='HTML'
+            parse_mode='Markdown'
         )
         logger.info(f"Admin {update.effective_user.id} stopped tagging in chat {chat_id}.")
 
@@ -673,50 +698,76 @@ async def tag_stop(update: Update, application: Application) -> None:
         logger.error(f"Error in /tagstop command: {e}")
         await update.message.reply_text(f"टैगिंग रोकते समय एक error हुई: {e}")
 
-# --- Core Message Handler (Profanity, Link) ---
-async def handle_all_messages(update: Update, application: Application) -> None:
+# --- New Command to check bot permissions ---
+async def check_permissions(update: Update, context: CallbackContext):
+    chat = update.effective_chat
+    if chat.type not in ['group', 'supergroup']:
+        await update.message.reply_text("यह कमांड केवल ग्रुप्स में काम करती है।")
+        return
+    
+    if not await is_group_admin(chat.id, update.effective_user.id, context):
+        await update.message.reply_text("आप ग्रुप एडमिन नहीं हैं, इसलिए आप यह कमांड का उपयोग नहीं कर सकते।")
+        return
+        
+    try:
+        bot_member = await chat.get_member(context.bot.id)
+        perms = bot_member.permissions
+        
+        message = (
+            f"<b>{chat.title}</b> में बॉट की अनुमतियाँ (Permissions):\n\n"
+            f"<b>✅ मैसेज हटा सकता है:</b> {perms.can_delete_messages}\n"
+            f"<b>✅ सदस्यों को प्रतिबंधित कर सकता है:</b> {perms.can_restrict_members}\n"
+            f"<b>✅ मैसेज पिन कर सकता है:</b> {perms.can_pin_messages}\n"
+            f"<b>✅ मैसेज भेज सकता है:</b> {perms.can_send_messages}\n"
+        )
+        
+        await update.message.reply_text(message, parse_mode='HTML')
+        logger.info(f"Admin {update.effective_user.id} requested permissions check in chat {chat.id}.")
+    except Exception as e:
+        logger.error(f"Error checking permissions in chat {chat.id}: {e}")
+        await update.message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
+
+
+# --- Core Message Handler (Profanity, Bio Link, URL in message) ---
+async def handle_all_messages(update: Update, context: CallbackContext) -> None:
     message = update.message
     user = message.from_user
     chat = message.chat
     message_text = message.text
 
     if is_admin(user.id) and BROADCAST_MESSAGE.get(user.id) == "waiting_for_message":
-        await handle_broadcast_message(update, application)
+        await handle_broadcast_message(update, context)
         return
 
     if chat.type not in ['group', 'supergroup'] or message.via_bot:
         return
 
-    is_sender_admin = await is_group_admin(chat.id, user.id, application)
-
     # Check for profanity
     if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
-        if not is_sender_admin:
-            await handle_incident(update, application, "गाली-गलौज (Profanity)", "abuse")
+        await handle_incident(context, chat.id, user, "गाली-गलौज (Profanity)", message, "abuse")
         return
 
-    # Check for links in message
+    # Check for URLs directly in the message
     if URL_PATTERN.search(message_text):
+        await handle_incident(context, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
+        return
+
+    try:
+        is_sender_admin = await is_group_admin(chat.id, user.id, context)
         is_biolink_exception = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": user.id})
+
+        # Check for bio links if user is not admin and not an exception
         if not is_sender_admin and not is_biolink_exception:
-            await handle_incident(update, application, "मैसेज में लिंक (Link in Message)", "message_link")
-            return
-    
-    # Check for links in user bio (only if not an admin and not an exception)
-    if not is_sender_admin:
-        try:
-            is_biolink_exception = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": user.id})
-            if not is_biolink_exception:
-                user_profile = await application.bot.get_chat(user.id)
-                user_bio = user_profile.bio or ""
-                if URL_PATTERN.search(user_bio):
-                    await handle_incident(update, application, "बायो में लिंक (Link in Bio)", "biolink")
-                    return
-        except Exception as e:
-            logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+            user_profile = await context.bot.get_chat(user.id)
+            user_bio = user_profile.bio or ""
+            if URL_PATTERN.search(user_bio):
+                await handle_incident(context, chat.id, user, "बायो में लिंक (Link in Bio)", message, "biolink")
+                return
+    except Exception as e:
+        logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
 
 # --- Handler for Edited Messages ---
-async def handle_edited_messages(update: Update, application: Application) -> None:
+async def handle_edited_messages(update: Update, context: CallbackContext) -> None:
     edited_message = update.edited_message
     if not edited_message or edited_message.chat.type not in ['group', 'supergroup']:
         return
@@ -724,15 +775,10 @@ async def handle_edited_messages(update: Update, application: Application) -> No
     user = edited_message.from_user
     chat = edited_message.chat
     
-    # Do not handle edited messages from bot admins
-    is_sender_admin = await is_group_admin(chat.id, user.id, application)
-    if is_sender_admin:
-        return
-
-    await handle_incident(update, application, "मैसेज एडिट किया गया (Edited Message)", "edited_message")
+    await handle_incident(context, chat.id, user, "मैसेज एडिट किया गया (Edited Message)", edited_message, "edited_message")
 
 # --- Callback Query Handlers ---
-async def button_callback_handler(update: Update, application: Application) -> None:
+async def button_callback_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
 
@@ -742,7 +788,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
 
     # Check for admin status if the action is group-related
     if query.message.chat.type in ['group', 'supergroup']:
-        is_current_group_admin = await is_group_admin(chat_id, user_id, application)
+        is_current_group_admin = await is_group_admin(chat_id, user_id, context)
         if not is_current_group_admin:
             await query.edit_message_text("Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.")
             logger.warning(f"Non-admin user {user_id} tried to use admin button in chat {chat_id}.")
@@ -761,6 +807,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
             "• `/stats`: Bot usage stats dekhein (sirf bot admins ke liye).\n"
             "• `/broadcast`: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
             f"• `/addabuse &lt;shabd&gt;`: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+            f"• `/checkperms`: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
             "• `/tagall &lt;message&gt;`: Sabhi members ko tag karein.\n"
             "• `/onlinetag &lt;message&gt;`: Sirf online members ko tag karein.\n"
             "• `/admin &lt;message&gt;`: Sirf group admins ko tag karein.\n"
@@ -792,7 +839,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
             "Agar aapko ye bot pasand aaya hai to aap humein kuch paisa de sakte hain "
             "jisse hum is bot ko aage tak chalate rahein.\n\n"
             "<b>Donation Methods:</b>\n"
-            "• UPI: <code>arsadsaifi8272@ibl</code>\n\n"
+            "• UPI: `arsadsaifi8272@ibl`\n\n"
             "Aapka har sahyog value karta hai! Dhanyawad!"
         )
         keyboard = [
@@ -802,7 +849,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
         await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode='HTML')
 
     elif data == "back_to_main_menu":
-        bot_info = await application.bot.get_me()
+        bot_info = await context.bot.get_me()
         bot_name = bot_info.first_name
         welcome_message = (
             f"👋 <b>Namaste {query.from_user.first_name}!</b>\n\n"
@@ -818,7 +865,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 **Promotion**", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode='HTML')
@@ -828,9 +875,10 @@ async def button_callback_handler(update: Update, application: Application) -> N
         target_user_id = int(parts[3])
         group_chat_id = int(parts[4])
         
-        target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+        target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
         target_user_name = target_user.user.full_name
         
+        # Check if the user is already an exception
         is_biolink_approved = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
@@ -846,6 +894,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
             [InlineKeyboardButton("❗ Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
         ]
         
+        # Add the new button for bio-link approval
         if is_biolink_approved:
             actions_keyboard.append([InlineKeyboardButton("✅ Approved Bio User", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
         else:
@@ -867,7 +916,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
 
         try:
             db.biolink_exceptions.insert_one({"user_id": target_user_id})
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list mein add kar diya gaya hai. Ab se inke messages delete nahi honge.", parse_mode='HTML')
             logger.info(f"Admin {user_id} approved bio link for user {target_user_id}.")
         except Exception as e:
@@ -885,7 +934,7 @@ async def button_callback_handler(update: Update, application: Application) -> N
             
         try:
             db.biolink_exceptions.delete_one({"user_id": target_user_id})
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list se hata diya gaya hai. Ab se inke messages delete honge agar bio mein link hoga.", parse_mode='HTML')
             logger.info(f"Admin {user_id} removed bio link approval for user {target_user_id}.")
         except Exception as e:
@@ -910,13 +959,13 @@ async def button_callback_handler(update: Update, application: Application) -> N
                 return
 
             permissions = ChatPermissions(can_send_messages=False)
-            await application.bot.restrict_chat_member(
+            await context.bot.restrict_chat_member(
                 chat_id=group_chat_id,
                 user_id=target_user_id,
                 permissions=permissions,
                 until_date=until_date
             )
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode='HTML')
             logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
         except Exception as e:
@@ -928,8 +977,8 @@ async def button_callback_handler(update: Update, application: Application) -> N
         target_user_id = int(parts[1])
         group_chat_id = int(parts[2])
         try:
-            await application.bot.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            await context.bot.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko group se ban kar diya gaya hai.", parse_mode='HTML')
             logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
@@ -941,8 +990,8 @@ async def button_callback_handler(update: Update, application: Application) -> N
         target_user_id = int(parts[1])
         group_chat_id = int(parts[2])
         try:
-            await application.bot.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            await context.bot.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko group se nikal diya gaya hai.", parse_mode='HTML')
             logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
@@ -959,36 +1008,38 @@ async def button_callback_handler(update: Update, application: Application) -> N
             return
 
         try:
-            target_user = await application.bot.get_chat_member(group_chat_id, target_user_id)
+            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
             
+            # Update warning count for the user
             warnings_doc = db.warnings.find_one_and_update(
                 {"user_id": target_user_id, "chat_id": group_chat_id},
                 {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
                 upsert=True,
-                return_document="after"
+                return_document=True
             )
             warn_count = warnings_doc['count'] if warnings_doc else 1
             
             warn_message = (
-                f"🚨 <b>Chetavni</b>\n\n"
+                f"🚨 **Chetavni**\n\n"
                 f"➡️ {target_user.user.mention_html()}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
                 f"➡️ <b>Yeh aapki {warn_count}वी chetavni hai.</b>"
             )
             
-            await application.bot.send_message(chat_id=group_chat_id, text=warn_message, parse_mode='HTML')
+            await context.bot.send_message(chat_id=group_chat_id, text=warn_message, parse_mode='HTML')
             
+            # Check if user has reached 3 warnings
             if warn_count >= 3:
                 permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False)
-                await application.bot.restrict_chat_member(
+                await context.bot.restrict_chat_member(
                     chat_id=group_chat_id,
                     user_id=target_user_id,
                     permissions=permissions
                 )
                 permanent_mute_message = (
-                    f"❌ <b>Permanent Mute</b>\n\n"
+                    f"❌ **Permanent Mute**\n\n"
                     f"➡️ {target_user.user.mention_html()}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
                 )
-                await application.bot.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode='HTML')
+                await context.bot.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode='HTML')
                 await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode='HTML')
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
@@ -1021,10 +1072,10 @@ async def button_callback_handler(update: Update, application: Application) -> N
         else:
             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
 
-        user_obj = await application.bot.get_chat_member(group_chat_id, target_user_id)
+        user_obj = await context.bot.get_chat_member(group_chat_id, target_user_id)
 
         notification_message = (
-            f"🚨 <b>Group में नियम उल्लंघन!</b>\n\n"
+            f"🚨 **Group में Niyam Ulanghan!**\n\n"
             f"➡️ <b>User:</b> {user_obj.user.mention_html()}\n"
             f"➡️ <b>Reason:</b> \"{reason} की वजह से मैसेज हटा दिया गया है।\"\n\n"
             f"➡️ <b>Case ID:</b> <code>{case_id_value}</code>"
@@ -1043,9 +1094,9 @@ async def button_callback_handler(update: Update, application: Application) -> N
         await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode='HTML')
 
     elif data == "confirm_broadcast":
-        await confirm_broadcast(update, application)
+        await confirm_broadcast(update, context)
     elif data == "cancel_broadcast":
-        await cancel_broadcast(update, application)
+        await cancel_broadcast(update, context)
 
 # --- Flask App for Health Check ---
 @app.route('/')
@@ -1077,6 +1128,7 @@ def run_bot():
         application.add_handler(CommandHandler("onlinetag", tag_online))
         application.add_handler(CommandHandler("admin", tag_admins))
         application.add_handler(CommandHandler("tagstop", tag_stop))
+        application.add_handler(CommandHandler("checkperms", check_permissions))
 
 
         # Message Handlers
@@ -1093,7 +1145,7 @@ def run_bot():
         ))
         # Edited Message Handler
         application.add_handler(MessageHandler(
-            filters.Update.EDITED_MESSAGE & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+            filters.Update.EDITED_MESSAGE,
             handle_edited_messages
         ))
 
@@ -1112,4 +1164,3 @@ if __name__ == "__main__":
     flask_thread.daemon = True
     flask_thread.start()
     run_bot()
-
