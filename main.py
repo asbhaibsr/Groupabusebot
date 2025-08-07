@@ -6,14 +6,15 @@ import asyncio
 import logging
 import re
 import random
-from pymongo import MongoClient, ReturnDocument
+from pymongo import MongoClient
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
 from pyrogram.errors import BadRequest, Forbidden
-from pyrogram.enums import ChatType, ParseMode, ChatMemberStatus, ChatMembersFilter
+
+from flask import Flask, request, jsonify
 
 # Custom module import
 from profanity_filter import ProfanityFilter
@@ -22,15 +23,17 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0))
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0))
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME")
+LOG_CHANNEL_ID = -1002352329534
+CASE_CHANNEL_ID = -1002717243409
+CASE_CHANNEL_USERNAME = "AbusersDetector"
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'(https?://|www\.|t\.me/|telegram\.me/)')
+URL_PATTERN = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
+# Improved URL detection that catches more patterns
+BIO_URL_PATTERN = re.compile(r'(https?://|www\.|t\.me/|telegram\.me/)', re.IGNORECASE)
 TAG_EMOJIS = ["🎉", "✨", "💫", "🌟", "🎈", "🎊", "🔥", "💖", "⚡️", "🌈"]
 TAG_MESSAGES = {}
 
@@ -41,8 +44,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Flask App Initialization (for health check) ---
-from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # --- Pyrogram Client Initialization ---
@@ -60,18 +61,20 @@ profanity_filter = None
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
-    if not MONGO_DB_URI:
-        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB.")
+    if MONGO_DB_URI is None:
+        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
-        logger.warning("Profanity filter will use default list only.")
         return
 
     try:
         mongo_client = MongoClient(MONGO_DB_URI)
         db = mongo_client.get_database("asfilter")
 
-        collection_names = db.list_collection_names()
-        
+        try:
+            collection_names = db.list_collection_names()
+        except AttributeError:
+            collection_names = db.list_collections_names()
+
         if "groups" not in collection_names:
             db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
@@ -93,38 +96,43 @@ def init_mongodb():
         db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
         
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
-        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready for async connection.")
+        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}")
+        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
 
 # --- Helper Functions ---
 def is_admin(user_id: int) -> bool:
+    """Checks if the given user_id is a bot admin."""
     return user_id in ADMIN_USER_IDS
 
 async def is_group_admin(chat_id: int, user_id: int) -> bool:
+    """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
-        return member.status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]
+        if isinstance(member.status, enums.ChatMemberStatus):
+            return member.status in [enums.ChatMemberStatus.CREATOR, enums.ChatMemberStatus.ADMINISTRATOR]
+        else:
+            return member.status in ["creator", "administrator"]
     except (BadRequest, Forbidden):
         return False
     except Exception as e:
         logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
         return False
 
-async def log_to_channel(text: str, parse_mode: ParseMode = None) -> None:
-    if LOG_CHANNEL_ID > 0:
+async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
+    """Sends a log message to the predefined LOG_CHANNEL_ID."""
+    if LOG_CHANNEL_ID is not None:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
-        except (BadRequest, Forbidden) as e:
-            logger.error(f"Cannot send to log channel: {e}. Channel may not exist or bot lacks permissions.")
         except Exception as e:
-            logger.error(f"Error logging to channel: {e}")
+            logger.error(f"Error logging to channel {LOG_CHANNEL_ID}: {e}")
     else:
         logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
+    """Common function to handle all incidents (abuse, bio link, edited message)."""
     original_message_id = original_message.id
     message_text = original_message.text or "No text content"
     if not case_id:
@@ -132,12 +140,12 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     try:
         await client.delete_messages(chat_id=chat_id, message_ids=original_message_id)
-        logger.info(f"Deleted {reason} message from {user.username or user.mention} ({user.id}) in {chat_id}.")
+        logger.info(f"Deleted {reason} message from {user.username or user.full_name} ({user.id}) in {chat_id}.")
     except Exception as e:
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
     forwarded_message_id = None
-    case_detail_url = "https://t.me/"
+    case_detail_url = "N/A"
 
     if CASE_CHANNEL_ID > 0:
         try:
@@ -149,7 +157,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
                 f"<b>🆔 केस ID:</b> <code>{case_id}</code>\n\n"
                 f"<b>➡️ कारण:</b> {reason}\n"
-                f"<b>➡️ मूल मैसेज:</b> ||{message_text[:1000]}||\n"
+                f"<b>➡️ मूल मैसेज:</b> ||{message_text[:1000]}||\n"  # Limit message length
             )
             
             try:
@@ -188,7 +196,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             db.incidents.insert_one({
                 "case_id": case_id,
                 "user_id": user.id,
-                "user_name": user.mention,
+                "user_name": user.full_name,
                 "user_username": user.username,
                 "chat_id": chat_id,
                 "chat_title": original_message.chat.title,
@@ -204,7 +212,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             logger.error(f"Error logging incident {case_id} to DB: {e}")
 
     notification_message = (
-        f"🚨 <b>Group mein Niyam Ulanghan!</b>\n\n"
+        f"🚨 **Group mein Niyam Ulanghan!**\n\n"
         f"➡️ <b>User:</b> {user.mention}\n"
         f"➡️ <b>Reason:</b> \"{reason} ki wajah se message hata diya gaya hai।\"\n\n"
         f"➡️ <b>Case ID:</b> <code>{case_id}</code>"
@@ -247,8 +255,9 @@ async def start(client: Client, message: Message) -> None:
     chat = message.chat
     bot_info = await client.get_me()
     bot_name = bot_info.first_name
+    bot_username = bot_info.username
 
-    if chat.type == ChatType.PRIVATE:
+    if chat.type == enums.ChatType.PRIVATE:
         welcome_message = (
             f"👋 <b>Namaste {user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -263,18 +272,18 @@ async def start(client: Client, message: Message) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 **Promotion**", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text(
             text=welcome_message,
             reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML,
+            parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
         logger.info(f"User {user.first_name} ({user.id}) started the bot in private chat.")
 
-        if db and db.users:
+        if db is not None and db.users is not None:
             try:
                 db.users.update_one(
                     {"user_id": user.id},
@@ -290,18 +299,17 @@ async def start(client: Client, message: Message) -> None:
             f"Username: @{user.username if user.username else 'N/A'}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
-        await log_to_channel(log_message, parse_mode=ParseMode.HTML)
+        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
 
-    elif chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+    elif chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         try:
-            bot_info = await client.get_me()
-            bot_username = bot_info.username
+            bot_member = await client.get_chat_member(chat.id, bot_info.id)
             add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
             
             if await is_group_admin(chat.id, bot_info.id):
-                group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
+                group_start_message = f"Hello! Main <b>{bot_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
             else:
-                group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
+                group_start_message = f"Hello! Main <b>{bot_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
             
             group_keyboard = [
                 [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
@@ -312,14 +320,14 @@ async def start(client: Client, message: Message) -> None:
             await message.reply_text(
                 text=group_start_message,
                 reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
+                parse_mode=enums.ParseMode.HTML
             )
             logger.info(f"Bot received /start in group: {chat.title} ({chat.id}).")
-            if db and db.groups:
+            if db is not None and db.groups is not None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
-                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now()}},
+                        {"$set": {"title": chat.title, "type": chat.type, "last_active": datetime.now()}},
                         upsert=True
                     )
                 except Exception as e:
@@ -358,7 +366,7 @@ async def stats(client: Client, message: Message) -> None:
         f"• Uptime: {str(datetime.now() - bot_start_time).split('.')[0]} \n"
         f"• Last Check: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
     )
-    await message.reply_text(stats_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(stats_message, parse_mode=enums.ParseMode.HTML)
     logger.info(f"Admin {message.from_user.id} requested stats.")
 
 @client.on_message(filters.command("broadcast") & filters.user(ADMIN_USER_IDS) & filters.private)
@@ -485,19 +493,19 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
     if len(message.command) < 2:
-        await message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: <code>/addabuse &lt;shabd&gt;</code>", parse_mode=ParseMode.HTML)
+        await message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: `/addabuse <shabd>`")
         return
     word_to_add = " ".join(message.command[1:]).lower().strip()
     if not word_to_add:
         await message.reply_text("Kripya ek valid shabd dein.")
         return
-    if profanity_filter:
+    if profanity_filter is not None:
         try:
-            if await profanity_filter.add_bad_word(word_to_add):
-                await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=ParseMode.HTML)
+            if profanity_filter.add_bad_word(word_to_add):
+                await message.reply_text(f"✅ Shabd '`{word_to_add}`' safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.MARKDOWN_V2)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
             else:
-                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se hi list mein maujood hai\\.", parse_mode=ParseMode.HTML)
+                await message.reply_text(f"Shabd '`{word_to_add}`' pehle se hi list mein maujood hai\\.", parse_mode=enums.ParseMode.MARKDOWN_V2)
         except Exception as e:
             await message.reply_text(f"Shabd jodte samay error hui: {e}")
             logger.error(f"Error adding abuse word {word_to_add}: {e}")
@@ -522,14 +530,14 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 f"Added by: {message.from_user.mention} (<code>{message.from_user.id}</code>)\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
-            await log_to_channel(log_message, parse_mode=ParseMode.HTML)
+            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {message.from_user.id}.")
 
-            if db and db.groups:
+            if db is not None and db.groups is not None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
-                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now()}},
+                        {"$set": {"title": chat.title, "type": chat.type, "last_active": datetime.now()}},
                         upsert=True
                     )
                 except Exception as e:
@@ -540,12 +548,12 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     await message.reply_text(
                         f"Hello! Main <b>{bot_info.first_name}</b> hun, aur ab main is group mein moderation karunga.\n"
                         f"Kripya सुनिश्चित karein ki mere paas <b>'Delete Messages'</b>, <b>'Restrict Users'</b> aur <b>'Post Messages'</b> ki admin permissions hain takki main apna kaam theek se kar sakoon."
-                        , parse_mode=ParseMode.HTML)
+                        , parse_mode=enums.ParseMode.HTML)
                     logger.info(f"Bot confirmed admin status in {chat.title} ({chat.id}).")
                 else:
                     await message.reply_text(
                         f"Hello! Main <b>{bot_info.first_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
-                        , parse_mode=ParseMode.HTML)
+                        , parse_mode=enums.ParseMode.HTML)
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
@@ -566,7 +574,7 @@ async def tag_all(client: Client, message: Message) -> None:
         
         info_message = await message.reply_text(
             f"Is group mein {members_count} members hain.\n\nMessage: {message_text}\n\nTagging shuru ho raha hai...",
-            parse_mode=ParseMode.HTML
+            parse_mode=enums.ParseMode.HTML
         )
         
         members = []
@@ -589,7 +597,7 @@ async def tag_all(client: Client, message: Message) -> None:
             await client.send_message(
                 chat_id=chat_id,
                 text=tag_message,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=enums.ParseMode.MARKDOWN
             )
             await asyncio.sleep(1)
             
@@ -599,7 +607,6 @@ async def tag_all(client: Client, message: Message) -> None:
         logger.error(f"Error in /tagall command: {e}")
         await message.reply_text(f"Tag karte samay error hui: {e}")
 
-
 @client.on_message(filters.command("onlinetag") & filters.group)
 async def tag_online(client: Client, message: Message) -> None:
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
@@ -608,8 +615,8 @@ async def tag_online(client: Client, message: Message) -> None:
         return
         
     try:
-        online_message = "Online users ko tag karne ki suvidha ab Telegram API mein nahi hai."
-        await message.reply_text(online_message, parse_mode=ParseMode.HTML)
+        online_message = "**Online users ko tag karne ki suvidha ab Telegram API mein nahi hai.**"
+        await message.reply_text(online_message, parse_mode=enums.ParseMode.MARKDOWN_V2)
         
     except Exception as e:
         logger.error(f"Error in /onlinetag command: {e}")
@@ -623,11 +630,11 @@ async def tag_admins(client: Client, message: Message) -> None:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
         
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Admins, attention please!"
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "**Admins, attention please!**"
     chat_id = message.chat.id
 
     try:
-        admins = [admin async for admin in client.get_chat_members(chat_id, filter=ChatMembersFilter.ADMINISTRATORS)]
+        admins = [admin async for admin in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)]
         tagged_admins = [admin.user.mention for admin in admins if not admin.user.is_bot]
         
         if not tagged_admins:
@@ -640,8 +647,8 @@ async def tag_admins(client: Client, message: Message) -> None:
             TAG_MESSAGES[chat_id] = []
 
         sent_message = await message.reply_text(
-            f"{tag_message_text}\n\nMessage: {message_text}",
-            parse_mode=ParseMode.HTML
+            f"{tag_message_text}\n\n**Message:** {message_text}",
+            parse_mode=enums.ParseMode.HTML
         )
         TAG_MESSAGES[chat_id].append(sent_message.id)
         
@@ -670,10 +677,10 @@ async def tag_stop(client: Client, message: Message) -> None:
         bot_username = bot_info.username
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
         
-        final_message_text = "यह टैगिंग खत्म हो गया है।"
+        final_message_text = "**यह टैगिंग खत्म हो गया है।**"
         
         keyboard = [
-            [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
+            [InlineKeyboardButton("➕ **मुझे ग्रुप में जोड़ें**", url=add_to_group_url)],
             [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -681,7 +688,7 @@ async def tag_stop(client: Client, message: Message) -> None:
         await message.reply_text(
             final_message_text,
             reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML
+            parse_mode=enums.ParseMode.MARKDOWN
         )
         logger.info(f"Admin {message.from_user.id} stopped tagging in chat {chat_id}.")
 
@@ -710,7 +717,7 @@ async def check_permissions(client: Client, message: Message):
             f"<b>✅ मैसेज भेज सकता है:</b> {perms.can_send_messages}\n"
         )
         
-        await message.reply_text(message_text, parse_mode=ParseMode.HTML)
+        await message.reply_text(message_text, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Admin {message.from_user.id} requested permissions check in chat {chat.id}.")
     except Exception as e:
         logger.error(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
@@ -731,7 +738,7 @@ async def increment_warnings(user_id: int, chat_id: int):
         {"user_id": user_id, "chat_id": chat_id},
         {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
         upsert=True,
-        return_document=ReturnDocument.AFTER
+        return_document='after'
     )
     return warnings_doc['count'] if warnings_doc else 1
 
@@ -763,27 +770,21 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     chat = message.chat
     message_text = message.text
 
-    if not user:
-        return
-
     is_sender_admin = await is_group_admin(chat.id, user.id)
 
-    # Check for profanity
-    if profanity_filter and profanity_filter.contains_profanity(message_text):
+    if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity)", message, "abuse")
         return
 
-    # Check for URLs directly in the message
     if URL_PATTERN.search(message_text) and not is_sender_admin:
         await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
         return
 
-    # Check for bio link if the user is not an admin and not whitelisted
     if not is_sender_admin and not await is_biolink_whitelisted(user.id):
         try:
             user_profile = await client.get_chat(user.id)
             user_bio = user_profile.bio or ""
-            if re.search(r'(https?://|www\.|t\.me/|telegram\.me/)', user_bio, re.IGNORECASE):
+            if BIO_URL_PATTERN.search(user_bio):
                 await message.delete()
                 logger.info(f"Deleted message from user with bio link: {user.id}")
                 
@@ -809,7 +810,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
                 sent_message = await message.reply_text(warning_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
                 
-                if db and db.warnings:
+                if db is not None and db.warnings is not None:
                     db.warnings.update_one(
                         {"user_id": user.id, "chat_id": chat.id},
                         {"$set": {"last_sent_message_id": sent_message.id}}
@@ -836,14 +837,13 @@ async def handle_all_messages(client: Client, message: Message) -> None:
                             parse_mode=enums.ParseMode.HTML
                         )
                 return
-        except BadRequest as e:
-            logger.warning(f"Could not get chat info for user {user.id}: {e}")
         except Exception as e:
-            logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+            logger.error(f"Error checking user bio for user {user.id}: {e}")
     else:
         if await get_warnings(user.id, chat.id) > 0:
             await reset_warnings(user.id, chat.id)
             logger.info(f"Warnings reset for user {user.id} as their bio is clean.")
+
 
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
@@ -854,9 +854,6 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     user = edited_message.from_user
     chat = edited_message.chat
     
-    if not user:
-        return
-        
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
         try:
@@ -879,7 +876,7 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
-            await client.send_message(chat.id, notification_message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+            await client.send_message(chat.id, notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             logger.error(f"Error sending edited message notification in chat {chat.id}: {e}")
 
@@ -891,7 +888,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
     user_id = query.from_user.id
     chat_id = query.message.chat.id
     
-    if query.message.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu')):
+    if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP] and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu')):
         is_current_group_admin = await is_group_admin(chat_id, user_id)
         if not is_current_group_admin:
             await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
@@ -909,19 +906,19 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             "<b>• Admin Actions:</b> Mute, ban, kick users directly from the group notification.\n"
             "<b>• Incident Logging:</b> All violations are logged in a dedicated case channel.\n\n"
             "<b>Commands:</b>\n"
-            "• <code>/start</code>: Bot ko start karein (private aur group mein).\n"
-            "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
-            "• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-            f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
-            f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-            "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
-            "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
-            "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
-            "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein."
+            "• `/start`: Bot ko start karein (private aur group mein).\n"
+            "• `/stats`: Bot usage stats dekhein (sirf bot admins ke liye).\n"
+            "• `/broadcast`: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+            f"• `/addabuse <shabd>`: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+            f"• `/checkperms`: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
+            "• `/tagall <message>`: Sabhi members ko tag karein.\n"
+            "• `/onlinetag <message>`: Online members ko tag karein.\n"
+            "• `/admin <message>`: Sirf group admins ko tag karein.\n"
+            "• `/tagstop`: Saare tagging messages ko delete kar dein."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data == "other_bots":
         other_bots_text = (
@@ -933,7 +930,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data == "donate_info":
         donate_text = (
@@ -946,7 +943,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data == "back_to_main_menu":
         bot_info = await client.get_me()
@@ -965,10 +962,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         keyboard = [
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
             [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+            [InlineKeyboardButton("📈 **Promotion**", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data.startswith("admin_actions_menu_"):
         parts = data.split('_')
@@ -976,36 +973,35 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[4])
         
         target_user = await client.get_chat_member(group_chat_id, target_user_id)
-        target_user_mention = target_user.user.mention
+        target_user_name = target_user.user.full_name
         
-        is_biolink_approved = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": target_user_id})
+        is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
-            f"{target_user_mention} ({target_user_id}) ke liye actions:\n"
+            f"<b>{target_user_name}</b> ({target_user_id}) ke liye actions:\n"
             f"Group: {query.message.chat.title}"
         )
         actions_keyboard = [
-            [InlineKeyboardButton("Mute (30 min)", callback_data=f"mute_{target_user_id}_{group_chat_id}_30m")],
-            [InlineKeyboardButton("Mute (1 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_1h")],
-            [InlineKeyboardButton("Mute (24 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_24h")],
-            [InlineKeyboardButton("Ban", callback_data=f"ban_{target_user_id}_{group_chat_id}")],
-            [InlineKeyboardButton("Kick", callback_data=f"kick_{target_user_id}_{group_chat_id}")],
-            [InlineKeyboardButton("Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("🔇 Mute (30 min)", callback_data=f"mute_{target_user_id}_{group_chat_id}_30m")],
+            [InlineKeyboardButton("🔇 Mute (1 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_1h")],
+            [InlineKeyboardButton("🔇 Mute (24 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_24h")],
+            [InlineKeyboardButton("🚫 Ban", callback_data=f"ban_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("🦵 Kick", callback_data=f"kick_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("❗ Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
         ]
         
         if is_biolink_approved:
-            actions_keyboard.append([InlineKeyboardButton("Unapprove Bio Link", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
+            actions_keyboard.append([InlineKeyboardButton("✅ Approved Bio User", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
         else:
-            actions_keyboard.append([InlineKeyboardButton("Approve Bio Link", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
+            actions_keyboard.append([InlineKeyboardButton("✍️ Approved Bio User", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
 
         actions_keyboard.append([InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")])
         
         reply_markup = InlineKeyboardMarkup(actions_keyboard)
-        await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data.startswith("approve_bio_"):
         target_user_id = int(data.split('_')[2])
-        chat_id = int(data.split('_')[3])
         await add_biolink_whitelist(target_user_id)
         await reset_warnings(target_user_id, chat_id)
         
@@ -1014,22 +1010,21 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
         keyboard = [
             [
-                InlineKeyboardButton("Bio Link Unapprove", callback_data=f"unapprove_bio_{target_user_id}_{chat_id}"),
-                InlineKeyboardButton("Band Karen", callback_data=f"close_message_{query.message.id}")
+                InlineKeyboardButton("🚫 Bio Link Unapprove", callback_data=f"unapprove_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
-            f"✅ {mention} (<code>{target_user_id}</code>) ko bio link exceptions list mein add kar diya gaya hai.",
+            f"✅ {mention} (`{target_user_id}`) ko bio link exceptions list mein add kar diya gaya hai.",
             reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML
+            parse_mode=enums.ParseMode.HTML
         )
         return
 
     elif data.startswith("unapprove_bio_"):
         target_user_id = int(data.split('_')[2])
-        chat_id = int(data.split('_')[3])
         await remove_biolink_whitelist(target_user_id)
 
         target_user = await client.get_chat_member(chat_id, target_user_id)
@@ -1037,16 +1032,16 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         
         keyboard = [
             [
-                InlineKeyboardButton("Bio Link Approve", callback_data=f"approve_bio_{target_user_id}_{chat_id}"),
-                InlineKeyboardButton("Band Karen", callback_data=f"close_message_{query.message.id}")
+                InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            f"❌ {mention} (<code>{target_user_id}</code>) ko bio link exceptions list se hata diya gaya hai.",
+            f"❌ {mention} (`{target_user_id}`) ko bio link exceptions list se hata diya gaya hai.",
             reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML
+            parse_mode=enums.ParseMode.HTML
         )
         return
 
@@ -1083,7 +1078,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 until_date=until_date
             )
             target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
             logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
@@ -1096,7 +1091,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             await client.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
             target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
             logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
             await query.edit_message_text(f"Ban karte samay error hui: {e}")
@@ -1109,7 +1104,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             await client.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
             target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
             logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
             await query.edit_message_text(f"Kick karte samay error hui: {e}")
@@ -1120,7 +1115,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user_id = int(parts[1])
         group_chat_id = int(parts[2])
 
-        if not db or not db.warnings:
+        if db is None or db.warnings is None:
             await query.edit_message_text("Database connection available nahi hai. Chetavni nahi de sakte.")
             return
 
@@ -1131,17 +1126,17 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 {"user_id": target_user_id, "chat_id": group_chat_id},
                 {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
                 upsert=True,
-                return_document=ReturnDocument.AFTER
+                return_document='after'
             )
             warn_count = warnings_doc['count'] if warnings_doc else 1
             
             warn_message = (
-                f"🚨 <b>Chetavni</b>\n\n"
+                f"🚨 **Chetavni**\n\n"
                 f"➡️ {target_user.user.mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
                 f"➡️ <b>Yeh aapki {warn_count}vi chetavni hai.</b>"
             )
             
-            await client.send_message(chat_id=group_chat_id, text=warn_message, parse_mode=ParseMode.HTML)
+            await client.send_message(chat_id=group_chat_id, text=warn_message, parse_mode=enums.ParseMode.HTML)
             
             if warn_count >= 3:
                 permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False)
@@ -1151,14 +1146,14 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                     permissions=permissions
                 )
                 permanent_mute_message = (
-                    f"❌ <b>Permanent Mute</b>\n\n"
+                    f"❌ **Permanent Mute**\n\n"
                     f"➡️ {target_user.user.mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
                 )
-                await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=ParseMode.HTML)
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=ParseMode.HTML)
+                await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=ParseMode.HTML)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
                 
         except Exception as e:
@@ -1171,7 +1166,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[5])
 
         incident_data = None
-        if db and db.incidents:
+        if db is not None and db.incidents is not None:
             incident_data = db.incidents.find_one({
                 "chat_id": group_chat_id,
                 "user_id": target_user_id
@@ -1181,18 +1176,16 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         reason = incident_data["reason"] if incident_data else "Ulanghan"
         case_channel_message_id = incident_data.get("case_channel_message_id") if incident_data else None
         
-        if case_channel_message_id and CASE_CHANNEL_ID:
+        if case_channel_message_id:
             channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
             case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
-        elif CASE_CHANNEL_USERNAME:
-             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
         else:
-            case_detail_url = "https://t.me/telegram"
+            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
 
         user_obj = await client.get_chat_member(group_chat_id, target_user_id)
 
         notification_message = (
-            f"🚨 <b>Group mein Niyam Ulanghan!</b>\n\n"
+            f"🚨 **Group mein Niyam Ulanghan!**\n\n"
             f"➡️ <b>User:</b> {user_obj.user.mention}\n"
             f"➡️ <b>Reason:</b> \"{reason} ki wajah se message hata diya gaya hai।\"\n\n"
             f"➡️ <b>Case ID:</b> <code>{case_id_value}</code>"
@@ -1208,13 +1201,12 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data == "confirm_broadcast":
         await confirm_broadcast(client, query)
     elif data == "cancel_broadcast":
         await cancel_broadcast(client, query)
-
 
 # --- Flask App for Health Check ---
 @app.route('/')
@@ -1228,55 +1220,15 @@ def run_flask_app():
     app.run(host="0.0.0.0", port=port)
 
 # --- Entry Point ---
-async def main_async():
-    """Main asynchronous function to initialize and run the bot."""
-    global profanity_filter
-    
+if __name__ == "__main__":
     init_mongodb()
     
-    # Await the profanity filter's async initialization
-    if profanity_filter:
-        await profanity_filter.initialize()
-    else:
-        logger.error("ProfanityFilter instance not created. Check MongoDB URI and connection.")
-
-    # Start the Pyrogram client
-    await client.start()
-    logger.info("Bot is running...")
-
-    # Now that the client is running, set bot commands.
-    await client.set_bot_commands([
-        BotCommand("start", "Bot ko start karein."),
-        BotCommand("stats", "Bot ke stats dekhein (bot admins only)."),
-        BotCommand("broadcast", "Sabhi users ko message bhejein (bot admins only)."),
-        BotCommand("addabuse", "Custom gaali wala shabd filter mein add karein (bot admins only)."),
-        BotCommand("checkperms", "Group mein bot ki permissions jaanchein."),
-        BotCommand("tagall", "Sabhi members ko tag karein (group admins only)."),
-        BotCommand("onlinetag", "Online members ko tag karein (group admins only)."),
-        BotCommand("admin", "Sirf group admins ko tag karein (group admins only)."),
-        BotCommand("tagstop", "Saare tagging messages ko delete kar dein (group admins only)."),
-    ])
-    logger.info("Bot commands set.")
-
-    # Keep the bot running indefinitely
-    await asyncio.Future()
-
-if __name__ == "__main__":
     # Run the Flask app in a separate thread
     flask_thread = threading.Thread(target=run_flask_app)
     flask_thread.daemon = True
     flask_thread.start()
-    
-    # Start the Pyrogram client and event loop
-    try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
-    except Exception as e:
-        logger.error(f"An error occurred in the main event loop: {e}")
-    finally:
-        if client:
-            client.stop()
-        if profanity_filter and profanity_filter.mongo_client:
-            profanity_filter.mongo_client.close()
 
+    # The client.run() method handles starting the bot and running event loops
+    logger.info("Bot is starting...")
+    client.run()
+    logger.info("Bot stopped.")
