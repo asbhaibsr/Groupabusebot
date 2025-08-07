@@ -223,17 +223,17 @@ async def handle_incident(context: ContextTypes.DEFAULT_TYPE, chat_id, user, rea
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
+        logger.info(f"Incident notification sent for user {user.id} in chat {chat.id}.")
     except Exception as e:
-        logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
+        logger.error(f"Error sending notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
         # Fallback to a simpler message if HTML parsing fails or other issues occur
         try:
             await context.bot.send_message(
-                chat_id=chat_id,
+                chat_id=chat.id,
                 text=f"User {user.id} ka message hata diya gaya hai. Karan: {reason}"
             )
         except Exception as simple_e:
-            logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
+            logger.error(f"Couldn't send even simple notification in chat {chat.id}: {simple_e}")
 
 # --- Bot Commands Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -705,6 +705,45 @@ async def check_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
 
 
+# --- Helper functions for warnings and biolink exceptions ---
+async def get_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return 0
+    warnings_doc = db.warnings.find_one({"user_id": user_id, "chat_id": chat_id})
+    return warnings_doc.get("count", 0) if warnings_doc else 0
+
+async def increment_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return 1
+    warnings_doc = db.warnings.find_one_and_update(
+        {"user_id": user_id, "chat_id": chat_id},
+        {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
+        upsert=True,
+        return_document=True
+    )
+    return warnings_doc['count']
+
+async def reset_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return
+    db.warnings.delete_one({"user_id": user_id, "chat_id": chat_id})
+
+async def is_biolink_whitelisted(user_id: int) -> bool:
+    if db is None or db.biolink_exceptions is None:
+        return False
+    return db.biolink_exceptions.find_one({"user_id": user_id}) is not None
+
+async def add_biolink_whitelist(user_id: int):
+    if db is None or db.biolink_exceptions is None:
+        return
+    db.biolink_exceptions.update_one({"user_id": user_id}, {"$set": {"timestamp": datetime.now()}}, upsert=True)
+
+async def remove_biolink_whitelist(user_id: int):
+    if db is None or db.biolink_exceptions is None:
+        return
+    db.biolink_exceptions.delete_one({"user_id": user_id})
+
+
 # --- Core Message Handler (Profanity, Bio Link, URL in message) ---
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
@@ -731,21 +770,84 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await handle_incident(context, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
         return
 
-    try:
-        is_biolink_exception = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": user.id})
-
-        # Check for bio links if user is not admin and not an exception
-        if not is_sender_admin and not is_biolink_exception:
+    # Ab bio link check karne ka code yahan aayega
+    # Pehle checks ko yahan rakhte hain
+    if not is_sender_admin and not await is_biolink_whitelisted(user.id):
+        try:
             user_profile = await context.bot.get_chat(user.id)
             user_bio = user_profile.bio or ""
             if URL_PATTERN.search(user_bio):
-                await handle_incident(context, chat.id, user, "बायो में लिंक (Link in Bio)", message, "biolink")
+                try:
+                    await message.delete()
+                    logger.info(f"Deleted message from user with bio link: {user.id}")
+                except Exception as e:
+                    logger.error(f"Could not delete message for user {user.id}: {e}")
+                    
+                # Warning system ka logic
+                warn_count = await increment_warnings(user.id, chat.id)
+                warn_limit = 3 # Aap isse badal sakte hain
+                
+                # Check for existing warning message
+                warnings_doc = db.warnings.find_one({"user_id": user.id, "chat_id": chat.id})
+                last_sent_message_id = warnings_doc.get("last_sent_message_id") if warnings_doc else None
+
+                warning_text = (
+                    "**🚨 Chetavni** 🚨\n\n"
+                    f"👤 **User:** {user.mention_html()} (`{user.id}`)\n"
+                    "❌ **Karan:** Bio mein link mila\n"
+                    f"⚠️ **Chetavni:** {warn_count}/{warn_limit}\n\n"
+                    "**Notice: Kripya apne bio se links hata dein.**"
+                )
+                
+                # Buttons
+                keyboard = [
+                    [
+                        InlineKeyboardButton("❌ Chetavni Cancel", callback_data=f"cancel_warn_{user.id}"),
+                        InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{user.id}_{chat.id}")
+                    ],
+                    [InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{message.message_id}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                sent_message = await message.reply_text(warning_text, reply_markup=reply_markup, parse_mode='HTML')
+                
+                # Update the warning message ID in the database for later editing
+                db.warnings.update_one(
+                    {"user_id": user.id, "chat_id": chat.id},
+                    {"$set": {"last_sent_message_id": sent_message.message_id}}
+                )
+
+                if warn_count >= warn_limit:
+                    try:
+                        await context.bot.restrict_chat_member(
+                            chat_id=chat.id,
+                            user_id=user.id,
+                            permissions=ChatPermissions(can_send_messages=False)
+                        )
+                        # Remove the bio link exception if any existed
+                        await remove_biolink_whitelist(user.id)
+                        await reset_warnings(user.id, chat.id)
+                        
+                        mute_text = (
+                            f"**{user.mention_html()}** ko **mute** kar diya gaya hai kyunki unhone bio link ke liye {warn_limit} warnings cross kar di hain."
+                        )
+                        await sent_message.edit_text(mute_text, parse_mode='HTML', reply_markup=None)
+                    except Exception as e:
+                        logger.error(f"Error muting user {user.id} after warnings: {e}")
+                        await sent_message.edit_text(
+                            f"Bot ke paas {user.mention_html()} ko mute karne ki permission nahi hai.",
+                            parse_mode='HTML'
+                        )
                 return
-    except BadRequest as e:
-        # Ignore if user's bio is not accessible (e.g., bot cannot get chat info)
-        logger.warning(f"Could not get chat info for user {user.id}: {e}")
-    except Exception as e:
-        logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+        except BadRequest as e:
+            logger.warning(f"Could not get chat info for user {user.id}: {e}")
+        except Exception as e:
+            logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+    else:
+        # Agar user ka bio sahi hai, toh uski warnings reset kar do
+        if await get_warnings(user.id, chat.id) > 0:
+            await reset_warnings(user.id, chat.id)
+            logger.info(f"Warnings reset for user {user.id} as their bio is clean.")
 
 
 # --- Handler for Edited Messages ---
@@ -760,7 +862,15 @@ async def handle_edited_messages(update: Update, context: ContextTypes.DEFAULT_T
     # Check if the user is an admin before handling edited message
     is_sender_admin = await is_group_admin(chat.id, user.id, context)
     if not is_sender_admin:
-        await handle_incident(context, chat.id, user, "मैसेज एडिट किया गया (Edited Message)", edited_message, "edited_message")
+        try:
+            await edited_message.delete()
+            logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
+        except Exception as e:
+            logger.error(f"Error deleting edited message in {chat.id}: {e}. Bot needs 'Delete Messages' permission.")
+            
+        # Iske baad aap chahe toh notification bhej sakte hain
+        notification_message = f"🚨 {user.mention_html()} ne ek message edit kiya jo delete kar diya gaya hai."
+        await context.bot.send_message(chat_id, notification_message, parse_mode='HTML')
 
 
 # --- Callback Query Handlers ---
@@ -889,42 +999,71 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
         reply_markup = InlineKeyboardMarkup(actions_keyboard)
         await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode='HTML')
-        
-    elif data.startswith("approve_bio_"):
-        parts = data.split('_')
-        target_user_id = int(parts[2])
-        group_chat_id = int(parts[3])
 
-        if db is None or db.biolink_exceptions is None:
-            await query.edit_message_text("Database connection available nahi hai. Bio link exception add nahi kar sakte.")
+    elif data.startswith("approve_bio_"):
+        if not is_current_group_admin:
+            await query.edit_message_text("❌ Aapke paas is action ko karne ki permission nahi hai.")
             return
 
-        try:
-            db.biolink_exceptions.insert_one({"user_id": target_user_id})
-            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list mein add kar diya gaya hai. Ab se inke messages delete nahi honge.", parse_mode='HTML')
-            logger.info(f"Admin {user_id} approved bio link for user {target_user_id}.")
-        except Exception as e:
-            await query.edit_message_text(f"Bio link exception add karte samay error hui: {e}")
-            logger.error(f"Error adding bio link exception for user {target_user_id}: {e}")
+        target_user_id = int(data.split('_')[2])
+        await add_biolink_whitelist(target_user_id)
+        await reset_warnings(target_user_id, chat_id)
+        
+        target_user = await context.bot.get_chat_member(chat_id, target_user_id)
+        mention = target_user.user.mention_html()
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🚫 Bio Link Unapprove", callback_data=f"unapprove_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.message_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"✅ {mention} (`{target_user_id}`) ko bio link exceptions list mein add kar diya gaya hai.",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        return
 
     elif data.startswith("unapprove_bio_"):
-        parts = data.split('_')
-        target_user_id = int(parts[2])
-        group_chat_id = int(parts[3])
-        
-        if db is None or db.biolink_exceptions is None:
-            await query.edit_message_text("Database connection available nahi hai. Bio link exception remove nahi kar sakte.")
+        if not is_current_group_admin:
+            await query.edit_message_text("❌ Aapke paas is action ko karne ki permission nahi hai.")
             return
-            
+
+        target_user_id = int(data.split('_')[2])
+        await remove_biolink_whitelist(target_user_id)
+
+        target_user = await context.bot.get_chat_member(chat_id, target_user_id)
+        mention = target_user.user.mention_html()
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.message_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"❌ {mention} (`{target_user_id}`) ko bio link exceptions list se hata diya gaya hai.",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        return
+
+    elif data.startswith("close_message_"):
+        if not is_current_group_admin:
+            await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai.")
+            return
+        
+        message_id_to_delete = int(data.split('_')[2])
         try:
-            db.biolink_exceptions.delete_one({"user_id": target_user_id})
-            target_user = await context.bot.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention_html()} ko bio link exceptions list se hata diya gaya hai. Ab se inke messages delete honge agar bio mein link hoga.", parse_mode='HTML')
-            logger.info(f"Admin {user_id} removed bio link approval for user {target_user_id}.")
+            await context.bot.delete_message(chat_id, message_id_to_delete)
         except Exception as e:
-            await query.edit_message_text(f"Bio link exception remove karte samay error hui: {e}")
-            logger.error(f"Error removing bio link exception for user {target_user_id}: {e}")
+            await query.answer("❌ Message delete karne mein error hui.", show_alert=True)
+            logger.error(f"Error deleting message {message_id_to_delete}: {e}")
 
     elif data.startswith("mute_"):
         parts = data.split('_')
@@ -1083,6 +1222,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     elif data == "cancel_broadcast":
         await cancel_broadcast(update, context)
 
+
 # --- Flask App for Health Check ---
 @app.route('/')
 def health_check():
@@ -1149,4 +1289,3 @@ if __name__ == "__main__":
     flask_thread.daemon = True
     flask_thread.start()
     run_bot()
-
