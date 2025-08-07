@@ -768,7 +768,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
                     last_sent_message_id = warnings_doc.get("last_sent_message_id") if warnings_doc else None
 
                 warning_text = (
-                    "<b>🚨 Chetavni</b> 🚨\n\n"
+                    "🚨 <b>Chetavni</b> 🚨\n\n"
                     f"👤 <b>User:</b> {user.mention} (<code>{user.id}</code>)\n"
                     "❌ <b>Karan:</b> Bio mein link mila\n"
                     f"⚠️ <b>Chetavni:</b> {warn_count}/{warn_limit}\n\n"
@@ -960,18 +960,18 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             f"Group: {query.message.chat.title}"
         )
         actions_keyboard = [
-            [InlineKeyboardButton("🔇 Mute (30 min)", callback_data=f"mute_{target_user_id}_{group_chat_id}_30m")],
-            [InlineKeyboardButton("🔇 Mute (1 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_1h")],
-            [InlineKeyboardButton("🔇 Mute (24 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_24h")],
-            [InlineKeyboardButton("🚫 Ban", callback_data=f"ban_{target_user_id}_{group_chat_id}")],
-            [InlineKeyboardButton("🦵 Kick", callback_data=f"kick_{target_user_id}_{group_chat_id}")],
-            [InlineKeyboardButton("❗ Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("Mute (30 min)", callback_data=f"mute_{target_user_id}_{group_chat_id}_30m")],
+            [InlineKeyboardButton("Mute (1 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_1h")],
+            [InlineKeyboardButton("Mute (24 hr)", callback_data=f"mute_{target_user_id}_{group_chat_id}_24h")],
+            [InlineKeyboardButton("Ban", callback_data=f"ban_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("Kick", callback_data=f"kick_{target_user_id}_{group_chat_id}")],
+            [InlineKeyboardButton("Warn", callback_data=f"warn_{target_user_id}_{group_chat_id}")],
         ]
         
         if is_biolink_approved:
-            actions_keyboard.append([InlineKeyboardButton("✅ Approved Bio User", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
+            actions_keyboard.append([InlineKeyboardButton("Unapprove Bio Link", callback_data=f"unapprove_bio_{target_user_id}_{group_chat_id}")])
         else:
-            actions_keyboard.append([InlineKeyboardButton("✍️ Approved Bio User", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
+            actions_keyboard.append([InlineKeyboardButton("Approve Bio Link", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
 
         actions_keyboard.append([InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")])
         
@@ -989,8 +989,8 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
         keyboard = [
             [
-                InlineKeyboardButton("🚫 Bio Link Unapprove", callback_data=f"unapprove_bio_{target_user_id}_{chat_id}"),
-                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.id}")
+                InlineKeyboardButton("Bio Link Unapprove", callback_data=f"unapprove_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("Band Karen", callback_data=f"close_message_{query.message.id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1012,8 +1012,8 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         
         keyboard = [
             [
-                InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{target_user_id}_{chat_id}"),
-                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{query.message.id}")
+                InlineKeyboardButton("Bio Link Approve", callback_data=f"approve_bio_{target_user_id}_{chat_id}"),
+                InlineKeyboardButton("Band Karen", callback_data=f"close_message_{query.message.id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
