@@ -352,7 +352,7 @@ async def broadcast_command(client: Client, message: Message) -> None:
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
 # CORRECTED LINE
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command())
+@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command)
 async def handle_broadcast_message(client: Client, message: Message) -> None:
     user = message.from_user
     
@@ -684,7 +684,7 @@ async def increment_warnings(user_id: int, chat_id: int):
     if db is None or db.warnings is None:
         return 1
     warnings_doc = db.warnings.find_one_and_update(
-        {"user_id": user_id, "chat_id": chat_id},
+        {"user_id": user.id, "chat_id": chat.id},
         {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
         upsert=True,
         return_document='after'
