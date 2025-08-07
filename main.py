@@ -11,7 +11,7 @@ from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
-from pyrogram.errors import BadRequest, Forbidden, TelegramError
+from pyrogram.errors import BadRequest, Forbidden, RPCError
 
 from flask import Flask, request, jsonify
 
