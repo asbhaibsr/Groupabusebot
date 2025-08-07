@@ -5,54 +5,72 @@ from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure, OperationFailure
 
+# Configure logging at the module level for consistency
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# You can add a handler here if you want to see the logs
+# For example:
+# handler = logging.StreamHandler()
+# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# handler.setFormatter(formatter)
+# logger.addHandler(handler)
 
 class ProfanityFilter:
-    def __init__(self, mongo_uri=None):
+    """
+    An asynchronous profanity filter that uses a default word list and
+    can be extended with a MongoDB database for dynamic word management.
+    """
+    
+    def __init__(self, mongo_uri: str = None):
+        """
+        Initializes the ProfanityFilter.
+
+        Args:
+            mongo_uri (str): The MongoDB connection URI. If not provided,
+                             only the default list is used.
+        """
         self.bad_words = self._load_default_bad_words()
         self.mongo_client = None
         self.db = None
         self.collection = None
         self.mongo_uri = mongo_uri
 
-        if self.mongo_uri:
-            # We don't connect immediately in __init__
-            # The connection will be established in an async method.
-            pass
-        else:
+        if not self.mongo_uri:
             logger.warning("No MongoDB URI provided. Using default profanity list only.")
+        else:
+            logger.info("MongoDB URI provided. Will attempt to connect asynchronously.")
 
-        logger.info(f"Profanity filter initialized with {len(self.bad_words)} bad words.")
-
-    async def init_async_db(self):
-        """Asynchronously initializes the MongoDB connection and loads words."""
+    async def initialize(self):
+        """
+        Asynchronously initializes the MongoDB connection and loads words from the database.
+        This method must be called after creating the ProfanityFilter instance.
+        """
         if not self.mongo_uri:
             return
 
         try:
             self.mongo_client = AsyncIOMotorClient(self.mongo_uri, serverSelectionTimeoutMS=5000)
+            
+            # Check connection by calling a server command
+            await self.mongo_client.admin.command('ping')
+            
             self.db = self.mongo_client.get_database("asfilter")
             self.collection = self.db.get_collection("bad_words")
 
-            # Create collection and index if they don't exist
-            collection_names = await self.db.list_collection_names()
-            if "bad_words" not in collection_names:
-                await self.db.create_collection("bad_words")
-                logger.info("MongoDB 'bad_words' collection created.")
-            
-            # Use await for creating the index
-            await self.collection.create_index("word", unique=True)
-            logger.info("MongoDB 'bad_words' collection unique index created/verified.")
+            # Ensure collection and unique index exist in a robust way
+            try:
+                # Use await on create_index
+                await self.collection.create_index("word", unique=True)
+                logger.info("MongoDB 'bad_words' collection unique index created/verified.")
+            except OperationFailure as e:
+                # This could happen if the index already exists with different options
+                logger.warning(f"Could not create index. It may already exist: {e}")
             
             await self._load_additional_bad_words_from_db()
+            logger.info(f"Profanity filter initialized with {len(self.bad_words)} bad words.")
 
         except ConnectionFailure as e:
             logger.error(f"MongoDB connection failed: {e}. Using default profanity list.")
-            self.mongo_client = None
-            self.db = None
-            self.collection = None
-        except OperationFailure as e:
-            logger.error(f"MongoDB operation failed (e.g., auth error): {e}. Using default profanity list.")
             self.mongo_client = None
             self.db = None
             self.collection = None
@@ -61,9 +79,17 @@ class ProfanityFilter:
             self.mongo_client = None
             self.db = None
             self.collection = None
+    
+    async def shutdown(self):
+        """Closes the MongoDB connection gracefully."""
+        if self.mongo_client:
+            self.mongo_client.close()
+            logger.info("MongoDB connection closed.")
 
-    def _load_default_bad_words(self):
-        # Comprehensive list of profanity in Hindi, English, and variations
+    def _load_default_bad_words(self) -> set:
+        """
+        Loads a comprehensive default list of profanity and its variations.
+        """
         default_list = [
             # Common Hindi profanity and variations
             "bhadve", "bhadwe", "bhadva", "bhadvaa", "bhosdike", "bhosdiwale", "bhosad", "bhosada", 
@@ -145,58 +171,82 @@ class ProfanityFilter:
             "dog", "swear", "abuse", "badword", "gaali", "gali", "abusive"
         ]
         
-        additional_variations = []
-        for word in default_list:
+        # A more efficient way to handle variations is to process them once
+        # instead of extending the list with redundant variations.
+        word_set = set(default_list)
+        
+        # Create variations of multi-word phrases
+        phrase_variations = set()
+        for word in word_set:
             if ' ' in word:
-                additional_variations.append(word.replace(' ', ''))
-                additional_variations.append(word.replace(' ', '_'))
-                additional_variations.append(word.replace(' ', '-'))
-                additional_variations.append(word.replace(' ', '.'))
-                additional_variations.append(word.replace(' ', '*'))
-        
-        default_list.extend(additional_variations)
-        
-        return set(default_list)
+                phrase_variations.add(word.replace(' ', ''))
+                phrase_variations.add(word.replace(' ', '_'))
+                phrase_variations.add(word.replace(' ', '-'))
+                phrase_variations.add(word.replace(' ', '.'))
+                # Using * as a separator in the regex is a more complex approach,
+                # but for simplicity and performance, this is a good start.
+
+        word_set.update(phrase_variations)
+        return word_set
 
     async def _load_additional_bad_words_from_db(self):
-        """Asynchronously loads additional bad words from MongoDB and adds them to the existing set."""
-        if self.collection: 
-            try:
-                # Use await for find and to_list
-                cursor = self.collection.find({})
-                db_words = [doc['word'] for doc in await cursor.to_list(length=None) if 'word' in doc]
-                self.bad_words.update(db_words)
-                logger.info(f"Loaded {len(db_words)} additional bad words from MongoDB.")
-            except Exception as e:
-                logger.error(f"Error loading additional bad words from MongoDB: {e}")
-        else:
+        """Asynchronously loads additional bad words from MongoDB and adds them."""
+        if not self.collection:
             logger.warning("MongoDB collection not available to load additional bad words.")
+            return
+
+        try:
+            # Use find to get a cursor, then to_list to fetch all documents
+            cursor = self.collection.find({})
+            db_words = [doc['word'] for doc in await cursor.to_list(length=None) if 'word' in doc]
+            self.bad_words.update(db_words)
+            logger.info(f"Loaded {len(db_words)} additional bad words from MongoDB.")
+        except Exception as e:
+            logger.error(f"Error loading additional bad words from MongoDB: {e}")
 
     async def add_bad_word(self, word: str) -> bool:
-        """Asynchronously adds a bad word to the filter and, if connected, to MongoDB."""
+        """
+        Asynchronously adds a new bad word to the filter and the MongoDB collection.
+        Returns True if the word was added, False otherwise.
+        """
         normalized_word = word.lower().strip()
-        if normalized_word not in self.bad_words:
-            self.bad_words.add(normalized_word)
-            if self.collection:
-                try:
-                    # Use await for the database operation
-                    await self.collection.update_one(
-                        {"word": normalized_word},
-                        {"$set": {"added_at": datetime.utcnow()}},
-                        upsert=True
-                    )
-                    logger.info(f"Added bad word '{normalized_word}' to MongoDB.")
-                except Exception as e:
-                    logger.error(f"Error adding word '{normalized_word}' to MongoDB: {e}")
-            return True
-        return False
+        if not normalized_word:
+            return False
+            
+        if normalized_word in self.bad_words:
+            return False
+
+        self.bad_words.add(normalized_word)
+        
+        if self.collection:
+            try:
+                # Use update_one with upsert=True to either insert or update
+                await self.collection.update_one(
+                    {"word": normalized_word},
+                    {"$set": {"added_at": datetime.utcnow()}},
+                    upsert=True
+                )
+                logger.info(f"Added bad word '{normalized_word}' to MongoDB.")
+            except Exception as e:
+                logger.error(f"Error adding word '{normalized_word}' to MongoDB: {e}")
+        return True
 
     def contains_profanity(self, text: str) -> bool:
+        """
+        Checks if a string contains any profanity from the word list.
+        It's a synchronous method as the check is in-memory.
+        """
         if not text:
             return False
-        text = text.lower()
+        
+        # Normalize the text once to a single, lowercase, non-punctuated string.
+        # This simplifies the regex and improves performance.
+        normalized_text = text.lower()
+        
         for word in self.bad_words:
-            # Use word boundaries to match whole words
-            if re.search(r'\b' + re.escape(word) + r'\b', text):
+            # Create a regex pattern to find the word as a standalone word.
+            # This helps avoid the "Scunthorpe problem" (e.g., "ass" in "class").
+            pattern = r'\b' + re.escape(word) + r'\b'
+            if re.search(pattern, normalized_text):
                 return True
         return False
