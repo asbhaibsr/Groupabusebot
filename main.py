@@ -13,9 +13,7 @@ from pyrogram.types import (
     ChatPermissions, BotCommand
 )
 from pyrogram.errors import BadRequest, Forbidden
-from pyrogram.enums import ChatType, ParseMode, ChatMemberStatus
-
-from flask import Flask, request, jsonify
+from pyrogram.enums import ChatType, ParseMode, ChatMemberStatus, ChatMembersFilter
 
 # Custom module import
 from profanity_filter import ProfanityFilter
@@ -24,9 +22,9 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0)) # Set to 0 if not provided
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0)) # Set to 0 if not provided
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME") # Get from env
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0))
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0))
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
 
@@ -43,6 +41,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Flask App Initialization (for health check) ---
+from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # --- Pyrogram Client Initialization ---
@@ -60,9 +60,10 @@ profanity_filter = None
 # --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
-    if MONGO_DB_URI is None:
-        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
+    if not MONGO_DB_URI:
+        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
+        logger.warning("Profanity filter will use default list only.")
         return
 
     try:
@@ -91,21 +92,18 @@ def init_mongodb():
             db.create_collection("warnings")
         db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
         
-        # --- FIX: Pass client instance to ProfanityFilter for async operations ---
-        profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI, pyrogram_client=client)
-        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
+        profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
+        logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready for async connection.")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
+        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
 
 # --- Helper Functions ---
 def is_admin(user_id: int) -> bool:
-    """Checks if the given user_id is a bot admin."""
     return user_id in ADMIN_USER_IDS
 
 async def is_group_admin(chat_id: int, user_id: int) -> bool:
-    """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
         return member.status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]
@@ -116,7 +114,6 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
         return False
 
 async def log_to_channel(text: str, parse_mode: ParseMode = None) -> None:
-    """Sends a log message to the predefined LOG_CHANNEL_ID."""
     if LOG_CHANNEL_ID > 0:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
@@ -128,7 +125,6 @@ async def log_to_channel(text: str, parse_mode: ParseMode = None) -> None:
         logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
-    """Common function to handle all incidents (abuse, bio link, edited message)."""
     original_message_id = original_message.id
     message_text = original_message.text or "No text content"
     if not case_id:
@@ -153,10 +149,9 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
                 f"<b>🆔 केस ID:</b> <code>{case_id}</code>\n\n"
                 f"<b>➡️ कारण:</b> {reason}\n"
-                f"<b>➡️ मूल मैसेज:</b> ||{message_text[:1000]}||\n"  # Limit message length
+                f"<b>➡️ मूल मैसेज:</b> ||{message_text[:1000]}||\n"
             )
             
-            # Try to send as a new message first
             try:
                 sent_details_msg = await client.send_message(
                     chat_id=CASE_CHANNEL_ID,
@@ -166,7 +161,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 forwarded_message_id = sent_details_msg.id
             except Exception as e:
                 logger.error(f"Error sending message to case channel: {e}")
-                # Fallback to forwarding the original message
                 try:
                     forwarded_msg = await original_message.forward(CASE_CHANNEL_ID)
                     forwarded_message_id = forwarded_msg.id
@@ -280,7 +274,7 @@ async def start(client: Client, message: Message) -> None:
         )
         logger.info(f"User {user.first_name} ({user.id}) started the bot in private chat.")
 
-        if db is not None and db.users is not None:
+        if db and db.users:
             try:
                 db.users.update_one(
                     {"user_id": user.id},
@@ -321,7 +315,7 @@ async def start(client: Client, message: Message) -> None:
                 parse_mode=ParseMode.HTML
             )
             logger.info(f"Bot received /start in group: {chat.title} ({chat.id}).")
-            if db is not None and db.groups is not None:
+            if db and db.groups:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
@@ -497,9 +491,8 @@ async def add_abuse_word(client: Client, message: Message) -> None:
     if not word_to_add:
         await message.reply_text("Kripya ek valid shabd dein.")
         return
-    if profanity_filter is not None:
+    if profanity_filter:
         try:
-            # Note: The profanity_filter.add_bad_word is now async
             if await profanity_filter.add_bad_word(word_to_add):
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
@@ -532,7 +525,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             await log_to_channel(log_message, parse_mode=ParseMode.HTML)
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {message.from_user.id}.")
 
-            if db is not None and db.groups is not None:
+            if db and db.groups:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
@@ -571,19 +564,16 @@ async def tag_all(client: Client, message: Message) -> None:
         members_count = await client.get_chat_members_count(chat_id)
         message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
         
-        # First send the info message
         info_message = await message.reply_text(
             f"Is group mein {members_count} members hain.\n\nMessage: {message_text}\n\nTagging shuru ho raha hai...",
             parse_mode=ParseMode.HTML
         )
         
-        # Get all members (excluding bots)
         members = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
                 members.append(member.user)
         
-        # Tag in batches of 10
         batch_size = 10
         emoji = random.choice(TAG_EMOJIS)
         
@@ -592,7 +582,6 @@ async def tag_all(client: Client, message: Message) -> None:
             mentions = " ".join([f"{emoji} [{user.first_name}](tg://user?id={user.id})" for user in batch])
             
             if i + batch_size >= len(members):
-                # Last batch - include the final message
                 tag_message = f"{mentions}\n\n{message_text}\n\n@asbhai_bsr bot update channel"
             else:
                 tag_message = mentions
@@ -602,9 +591,8 @@ async def tag_all(client: Client, message: Message) -> None:
                 text=tag_message,
                 parse_mode=ParseMode.MARKDOWN
             )
-            await asyncio.sleep(1)  # To avoid rate limiting
+            await asyncio.sleep(1)
             
-        # Delete the initial info message
         await info_message.delete()
         
     except Exception as e:
@@ -781,7 +769,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     is_sender_admin = await is_group_admin(chat.id, user.id)
 
     # Check for profanity
-    if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
+    if profanity_filter and profanity_filter.contains_profanity(message_text):
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity)", message, "abuse")
         return
 
@@ -795,7 +783,6 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         try:
             user_profile = await client.get_chat(user.id)
             user_bio = user_profile.bio or ""
-            # Improved URL detection that catches more patterns
             if re.search(r'(https?://|www\.|t\.me/|telegram\.me/)', user_bio, re.IGNORECASE):
                 await message.delete()
                 logger.info(f"Deleted message from user with bio link: {user.id}")
@@ -822,7 +809,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
                 sent_message = await message.reply_text(warning_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
                 
-                if db is not None and db.warnings is not None:
+                if db and db.warnings:
                     db.warnings.update_one(
                         {"user_id": user.id, "chat_id": chat.id},
                         {"$set": {"last_sent_message_id": sent_message.id}}
@@ -991,7 +978,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user = await client.get_chat_member(group_chat_id, target_user_id)
         target_user_mention = target_user.user.mention
         
-        is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
+        is_biolink_approved = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
             f"{target_user_mention} ({target_user_id}) ke liye actions:\n"
@@ -1133,7 +1120,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user_id = int(parts[1])
         group_chat_id = int(parts[2])
 
-        if db is None or db.warnings is None:
+        if not db or not db.warnings:
             await query.edit_message_text("Database connection available nahi hai. Chetavni nahi de sakte.")
             return
 
@@ -1184,7 +1171,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[5])
 
         incident_data = None
-        if db is not None and db.incidents is not None:
+        if db and db.incidents:
             incident_data = db.incidents.find_one({
                 "chat_id": group_chat_id,
                 "user_id": target_user_id
@@ -1200,7 +1187,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         elif CASE_CHANNEL_USERNAME:
              case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
         else:
-            case_detail_url = "https://t.me/telegram" # Fallback
+            case_detail_url = "https://t.me/telegram"
 
         user_obj = await client.get_chat_member(group_chat_id, target_user_id)
 
@@ -1241,14 +1228,19 @@ def run_flask_app():
     app.run(host="0.0.0.0", port=port)
 
 # --- Entry Point ---
-async def main():
+async def main_async():
+    """Main asynchronous function to initialize and run the bot."""
+    global profanity_filter
+    
     init_mongodb()
-    if profanity_filter and profanity_filter.mongo_uri:
-        # FIX: The profanity_filter.py file needs to be corrected to handle the database connection correctly.
-        # The user's provided log shows an error in that file. Assuming the user will fix it based on the previous response.
-        pass
+    
+    # Await the profanity filter's async initialization
+    if profanity_filter:
+        await profanity_filter.initialize()
+    else:
+        logger.error("ProfanityFilter instance not created. Check MongoDB URI and connection.")
 
-    # FIX: Start the client BEFORE setting commands.
+    # Start the Pyrogram client
     await client.start()
     logger.info("Bot is running...")
 
@@ -1265,7 +1257,7 @@ async def main():
         BotCommand("tagstop", "Saare tagging messages ko delete kar dein (group admins only)."),
     ])
     logger.info("Bot commands set.")
-    
+
     # Keep the bot running indefinitely
     await asyncio.Future()
 
@@ -1275,5 +1267,16 @@ if __name__ == "__main__":
     flask_thread.daemon = True
     flask_thread.start()
     
-    # Start the Pyrogram client
-    asyncio.run(main())
+    # Start the Pyrogram client and event loop
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        logger.error(f"An error occurred in the main event loop: {e}")
+    finally:
+        if client:
+            client.stop()
+        if profanity_filter and profanity_filter.mongo_client:
+            profanity_filter.mongo_client.close()
+
