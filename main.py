@@ -11,12 +11,14 @@ from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
-from pyrogram.errors import BadRequest, Forbidden, RPCError
+from pyrogram.errors import BadRequest, Forbidden
 
 from flask import Flask, request, jsonify
 
 # Custom module import
 # Ensure this file (profanity_filter.py) is present in your deployment
+# NOTE: You will need to install tgcrypto for better performance:
+# pip install tgcrypto
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
@@ -43,7 +45,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-client = None
+
+# --- Pyrogram Client Initialization ---
+# The client is initialized here directly so that @client decorators work correctly.
+client = Client(
+    "my_bot_session",
+    bot_token=TELEGRAM_BOT_TOKEN,
+    api_id=API_ID,
+    api_hash=API_HASH
+)
+
 mongo_client = None
 db = None
 profanity_filter = None
@@ -105,13 +116,13 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: str = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    if client is not None and LOG_CHANNEL_ID is not None:
+    if LOG_CHANNEL_ID is not None:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Error logging to channel {LOG_CHANNEL_ID}: {e}")
     else:
-        logger.warning("Client not initialized or LOG_CHANNEL_ID is not set, cannot log to channel.")
+        logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
     """Common function to handle all incidents (abuse, bio link, edited message)."""
@@ -201,16 +212,16 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             reply_markup=reply_markup,
             parse_mode='html'
         )
-        logger.info(f"Incident notification sent for user {user.id} in chat {chat.id}.")
+        logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
     except Exception as e:
-        logger.error(f"Error sending notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
+        logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
         try:
             await client.send_message(
-                chat_id=chat.id,
+                chat_id=chat_id,
                 text=f"User {user.id} ka message hata diya gaya hai. Karan: {reason}"
             )
         except Exception as simple_e:
-            logger.error(f"Couldn't send even simple notification in chat {chat.id}: {simple_e}")
+            logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
 
 # --- Bot Commands Handlers ---
 @client.on_message(filters.command("start"))
@@ -428,9 +439,6 @@ async def confirm_broadcast(client: Client, query: CallbackQuery) -> None:
                 fail_count += 1
             except BadRequest as e:
                 logger.warning(f"Broadcast failed to {chat_id} (BadRequest: {e}).")
-                fail_count += 1
-            except TelegramError as e:
-                logger.warning(f"Broadcast failed to {chat_id} (TelegramError: {e}).")
                 fail_count += 1
             except Exception as e:
                 logger.error(f"Failed to broadcast to {chat_id} (Unknown error: {e}).")
@@ -749,7 +757,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
                 
                 keyboard = [
                     [
-                        InlineKeyboardButton("❌ Chetavni Cancel", callback_data=f"cancel_warn_{user.id}"),
+                        InlineKeyboardButton("❌ Chetavni Cancel", callback_data=f"cancel_warn_{user.id}_{chat.id}"),
                         InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{user.id}_{chat.id}")
                     ],
                     [InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{message.id}")]
@@ -818,18 +826,19 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
 # --- Callback Query Handlers ---
 @client.on_callback_query()
 async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
-    await query.answer()
-
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat.id
+    is_current_group_admin = await is_group_admin(chat_id, user_id)
 
+    # Handle admin-only buttons
     if query.message.chat.type in ['group', 'supergroup'] and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu')):
-        is_current_group_admin = await is_group_admin(chat_id, user_id)
         if not is_current_group_admin:
-            await query.edit_message_text("Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.")
+            await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
             logger.warning(f"Non-admin user {user_id} tried to use admin button in chat {chat_id}.")
             return
+    
+    await query.answer()
 
     if data == "help_menu":
         help_text = (
@@ -934,10 +943,6 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode='html')
 
     elif data.startswith("approve_bio_"):
-        if not is_current_group_admin:
-            await query.edit_message_text("❌ Aapke paas is action ko karne ki permission nahi hai.")
-            return
-
         target_user_id = int(data.split('_')[2])
         await add_biolink_whitelist(target_user_id)
         await reset_warnings(target_user_id, chat_id)
@@ -961,10 +966,6 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     elif data.startswith("unapprove_bio_"):
-        if not is_current_group_admin:
-            await query.edit_message_text("❌ Aapke paas is action ko karne ki permission nahi hai.")
-            return
-
         target_user_id = int(data.split('_')[2])
         await remove_biolink_whitelist(target_user_id)
 
@@ -987,10 +988,6 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     elif data.startswith("close_message_"):
-        if not is_current_group_admin:
-            await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai.", show_alert=True)
-            return
-        
         message_id_to_delete = int(data.split('_')[2])
         try:
             await client.delete_messages(chat_id, message_id_to_delete)
@@ -1153,35 +1150,23 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
     elif data == "cancel_broadcast":
         await cancel_broadcast(client, query)
 
-
 # --- Flask App for Health Check ---
 @app.route('/')
 def health_check():
     """Simple health check endpoint for Koyeb."""
-    return jsonify({"status": "healthy", "bot_running": client is not None, "mongodb_connected": db is not None}), 200
+    return jsonify({"status": "healthy", "bot_running": True, "mongodb_connected": db is not None}), 200
 
 def run_flask_app():
     """Runs the Flask application."""
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
 
-
-# --- Main Bot Runner ---
-async def run_bot():
-    global client
-    if TELEGRAM_BOT_TOKEN is None or API_ID is None or API_HASH is None:
-        logger.error("Required environment variables (TELEGRAM_BOT_TOKEN, API_ID, API_HASH) are not set. Bot cannot start.")
-        return
-
-    try:
-        client = Client(
-            "my_bot_session",
-            bot_token=TELEGRAM_BOT_TOKEN,
-            api_id=API_ID,
-            api_hash=API_HASH
-        )
-        
-        # Set bot commands for better user experience
+# --- Entry Point ---
+if __name__ == "__main__":
+    init_mongodb()
+    
+    # Set bot commands for better user experience
+    async def set_commands():
         await client.set_bot_commands([
             BotCommand("start", "Bot ko shuru karein."),
             BotCommand("stats", "Bot usage stats dekhein."),
@@ -1194,17 +1179,12 @@ async def run_bot():
             BotCommand("checkperms", "Bot ki permissions jaanchein.")
         ])
 
-        logger.info("Bot is starting...")
-        await client.start()
-        logger.info("Bot started successfully. Waiting for updates...")
-        await asyncio.Event().wait()
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-
-# --- Entry Point ---
-if __name__ == "__main__":
-    init_mongodb()
+    # Run the Flask app in a separate thread
     flask_thread = threading.Thread(target=run_flask_app)
     flask_thread.daemon = True
     flask_thread.start()
-    asyncio.run(run_bot())
+
+    # The client.run() method handles starting the bot and running event loops
+    logger.info("Bot is starting...")
+    client.run()
+    logger.info("Bot stopped.")
