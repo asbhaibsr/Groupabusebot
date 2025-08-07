@@ -4,3 +4,4 @@ motor
 ProfanityFilter
 pymongo
 dnspython==2.6.0
+TgCrypto
