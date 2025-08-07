@@ -214,7 +214,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
     except Exception as e:
-        logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
+        logger.error(f"Error sending notification in chat {chat.id}: {e}. Make sure bot has 'Post Messages' permission.")
         try:
             await client.send_message(
                 chat_id=chat_id,
@@ -352,7 +352,7 @@ async def broadcast_command(client: Client, message: Message) -> None:
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
 # FIXED LINE HERE
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command(""))
+@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
 async def handle_broadcast_message(client: Client, message: Message) -> None:
     user = message.from_user
     
@@ -533,7 +533,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
 
 # --- Tagging Commands ---
-@client.on_message(filters.command("tagall") & (filters.group | filters.supergroup))
+@client.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client: Client, message: Message) -> None:
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
     if not is_sender_admin:
@@ -561,7 +561,7 @@ async def tag_all(client: Client, message: Message) -> None:
         logger.error(f"Error in /tagall command: {e}")
         await message.reply_text(f"Tag karte samay error hui: {e}")
 
-@client.on_message(filters.command("onlinetag") & (filters.group | filters.supergroup))
+@client.on_message(filters.command("onlinetag") & filters.group)
 async def tag_online(client: Client, message: Message) -> None:
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
     if not is_sender_admin:
@@ -577,7 +577,7 @@ async def tag_online(client: Client, message: Message) -> None:
         await message.reply_text(f"Online members ko tag karte samay error hui: {e}")
 
 
-@client.on_message(filters.command("admin") & (filters.group | filters.supergroup))
+@client.on_message(filters.command("admin") & filters.group)
 async def tag_admins(client: Client, message: Message) -> None:
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "**Admins, attention please!**"
     chat_id = message.chat.id
@@ -606,7 +606,7 @@ async def tag_admins(client: Client, message: Message) -> None:
         await message.reply_text(f"Admins ko tag karte samay error hui: {e}")
 
 
-@client.on_message(filters.command("tagstop") & (filters.group | filters.supergroup))
+@client.on_message(filters.command("tagstop") & filters.group)
 async def tag_stop(client: Client, message: Message) -> None:
     chat_id = message.chat.id
     is_sender_admin = await is_group_admin(chat_id, message.from_user.id)
@@ -646,7 +646,7 @@ async def tag_stop(client: Client, message: Message) -> None:
         await message.reply_text(f"टैगिंग रोकते समय एक error हुई: {e}")
 
 
-@client.on_message(filters.command("checkperms") & (filters.group | filters.supergroup))
+@client.on_message(filters.command("checkperms") & filters.group)
 async def check_permissions(client: Client, message: Message):
     chat = message.chat
     
@@ -713,7 +713,7 @@ async def remove_biolink_whitelist(user_id: int):
 
 
 # --- Core Message Handler (Profanity, Bio Link, URL in message) ---
-@client.on_message(filters.text & (filters.group | filters.supergroup) & ~filters.command & ~filters.via_bot)
+@client.on_message(filters.text & (filters.group) & ~filters.command & ~filters.via_bot)
 async def handle_all_messages(client: Client, message: Message) -> None:
     user = message.from_user
     chat = message.chat
@@ -804,7 +804,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
 
 # --- Handler for Edited Messages ---
-@client.on_edited_message(filters.text & (filters.group | filters.supergroup) & ~filters.via_bot)
+@client.on_edited_message(filters.text & (filters.group) & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
     if not edited_message:
         return
@@ -855,7 +855,8 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             "• `/broadcast`: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
             f"• `/addabuse <shabd>`: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
             f"• `/checkperms`: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-            "• `/tagall <message>`: Sabhi members ko tag karne ki koshish (Online members ko message bheja ja sakta hai).\n"
+            "• `/tagall <message>`: Sabhi members ko tag karein.\n"
+            "• `/onlinetag <message>`: Online members ko tag karein.\n"
             "• `/admin <message>`: Sirf group admins ko tag karein.\n"
             "• `/tagstop`: Saare tagging messages ko delete kar dein."
         )
