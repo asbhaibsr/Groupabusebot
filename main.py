@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- Pyrogram Client Initialization ---
-# The client is initialized here directly so that @client decorators work correctly.
 client = Client(
     "my_bot_session",
     bot_token=TELEGRAM_BOT_TOKEN,
@@ -71,8 +70,10 @@ def init_mongodb():
         mongo_client = MongoClient(MONGO_DB_URI)
         db = mongo_client.get_database("asfilter")
 
-        collection_names = db.list_collections_names() if hasattr(db, 'list_collections_names') else db.list_collection_names()
-
+        try:
+            collection_names = db.list_collection_names()
+        except AttributeError:
+            collection_names = db.list_collections_names()
 
         if "groups" not in collection_names:
             db.create_collection("groups")
@@ -110,7 +111,12 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
     """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
-        return member.status in [enums.ChatMemberStatus.CREATOR, enums.ChatMemberStatus.ADMINISTRATOR]
+        # Handle different Pyrogram versions' ChatMemberStatus representation
+        if isinstance(member.status, enums.ChatMemberStatus):
+            return member.status in [enums.ChatMemberStatus.CREATOR, enums.ChatMemberStatus.ADMINISTRATOR]
+        else:
+            # Fallback for older Pyrogram versions
+            return member.status in ["creator", "administrator"]
     except (BadRequest, Forbidden):
         return False
     except Exception as e:
@@ -170,7 +176,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     except Exception as e:
         logger.error(f"Error sending incident details to case channel: {e}")
 
-    if db and db.incidents:
+    if db is not None and db.incidents is not None:
         try:
             db.incidents.insert_one({
                 "case_id": case_id,
@@ -285,7 +291,7 @@ async def start(client: Client, message: Message) -> None:
             bot_member = await client.get_chat_member(chat.id, bot_info.id)
             add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
             
-            if bot_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.CREATOR]:
+            if await is_group_admin(chat.id, bot_info.id):
                 group_start_message = f"Hello! Main <b>{bot_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
             else:
                 group_start_message = f"Hello! Main <b>{bot_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
@@ -326,9 +332,12 @@ async def stats(client: Client, message: Message) -> None:
     total_incidents = 0
     if db is not None:
         try:
-            total_groups = db.groups.count_documents({}) if db.groups is not None else 0
-            total_users = db.users.count_documents({}) if db.users is not None else 0
-            total_incidents = db.incidents.count_documents({}) if db.incidents is not None else 0
+            if db.groups is not None:
+                total_groups = db.groups.count_documents({})
+            if db.users is not None:
+                total_users = db.users.count_documents({})
+            if db.incidents is not None:
+                total_incidents = db.incidents.count_documents({})
         except Exception as e:
             logger.error(f"Error fetching stats from DB: {e}")
             await message.reply_text(f"Stats fetch karte samay error hui: {e}")
@@ -355,7 +364,6 @@ async def broadcast_command(client: Client, message: Message) -> None:
     BROADCAST_MESSAGE[message.from_user.id] = "waiting_for_message"
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
-# FIXED LINE HERE
 @client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
 async def handle_broadcast_message(client: Client, message: Message) -> None:
     user = message.from_user
@@ -521,8 +529,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     logger.error(f"Error saving group {chat.id} to DB: {e}")
 
             try:
-                bot_member = await client.get_chat_member(chat.id, bot_info.id)
-                if bot_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.CREATOR]:
+                if await is_group_admin(chat.id, bot_info.id):
                     await message.reply_text(
                         f"Hello! Main <b>{bot_info.first_name}</b> hun, aur ab main is group mein moderation karunga.\n"
                         f"Kripya सुनिश्चित karein ki mere paas <b>'Delete Messages'</b>, <b>'Restrict Users'</b> aur <b>'Post Messages'</b> ki admin permissions hain takki main apna kaam theek se kar sakoon."
@@ -678,7 +685,7 @@ async def check_permissions(client: Client, message: Message):
         await message.reply_text(message_text, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Admin {message.from_user.id} requested permissions check in chat {chat.id}.")
     except Exception as e:
-        logger.error(f"Error checking permissions in chat {chat.id}: {e}")
+        logger.error(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
         await message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
 
 
@@ -698,7 +705,7 @@ async def increment_warnings(user_id: int, chat_id: int):
         upsert=True,
         return_document='after'
     )
-    return warnings_doc['count']
+    return warnings_doc['count'] if warnings_doc else 1
 
 async def reset_warnings(user_id: int, chat_id: int):
     if db is None or db.warnings is None:
@@ -755,8 +762,9 @@ async def handle_all_messages(client: Client, message: Message) -> None:
                 warn_count = await increment_warnings(user.id, chat.id)
                 warn_limit = 3
                 
-                warnings_doc = db.warnings.find_one({"user_id": user.id, "chat_id": chat.id})
-                last_sent_message_id = warnings_doc.get("last_sent_message_id") if warnings_doc else None
+                if db is not None and db.warnings is not None:
+                    warnings_doc = db.warnings.find_one({"user_id": user.id, "chat_id": chat.id})
+                    last_sent_message_id = warnings_doc.get("last_sent_message_id") if warnings_doc else None
 
                 warning_text = (
                     "**🚨 Chetavni** 🚨\n\n"
@@ -777,10 +785,11 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
                 sent_message = await message.reply_text(warning_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
                 
-                db.warnings.update_one(
-                    {"user_id": user.id, "chat_id": chat.id},
-                    {"$set": {"last_sent_message_id": sent_message.id}}
-                )
+                if db is not None and db.warnings is not None:
+                    db.warnings.update_one(
+                        {"user_id": user.id, "chat_id": chat.id},
+                        {"$set": {"last_sent_message_id": sent_message.id}}
+                    )
 
                 if warn_count >= warn_limit:
                     try:
@@ -831,8 +840,20 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
             logger.error(f"Error deleting edited message in {chat.id}: {e}. Bot needs 'Delete Messages' permission.")
             
         notification_message = f"🚨 {user.mention} ne ek message edit kiya jo delete kar diya gaya hai."
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
+                InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat.id}")
+            ],
+            [
+                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{edited_message.id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         try:
-            await client.send_message(chat.id, notification_message, parse_mode=enums.ParseMode.HTML)
+            await client.send_message(chat.id, notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             logger.error(f"Error sending edited message notification in chat {chat.id}: {e}")
 
@@ -843,10 +864,9 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat.id
-    is_current_group_admin = await is_group_admin(chat_id, user_id)
-
-    # Handle admin-only buttons
+    
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP] and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu')):
+        is_current_group_admin = await is_group_admin(chat_id, user_id)
         if not is_current_group_admin:
             await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
             logger.warning(f"Non-admin user {user_id} tried to use admin button in chat {chat_id}.")
@@ -932,7 +952,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user = await client.get_chat_member(group_chat_id, target_user_id)
         target_user_name = target_user.user.full_name
         
-        is_biolink_approved = db and db.biolink_exceptions and db.biolink_exceptions.find_one({"user_id": target_user_id})
+        is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
             f"<b>{target_user_name}</b> ({target_user_id}) ke liye actions:\n"
@@ -1123,7 +1143,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[5])
 
         incident_data = None
-        if db and db.incidents:
+        if db is not None and db.incidents is not None:
             incident_data = db.incidents.find_one({
                 "chat_id": group_chat_id,
                 "user_id": target_user_id
