@@ -16,18 +16,15 @@ from pyrogram.errors import BadRequest, Forbidden
 from flask import Flask, request, jsonify
 
 # Custom module import
-# Ensure this file (profanity_filter.py) is present in your deployment
-# NOTE: You will need to install tgcrypto for better performance:
-# pip install tgcrypto
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = -1002352329534
-CASE_CHANNEL_ID = -1002717243409
-CASE_CHANNEL_USERNAME = "AbusersDetector"
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0)) # Set to 0 if not provided
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0)) # Set to 0 if not provided
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME") # Get from env
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
 
@@ -70,11 +67,8 @@ def init_mongodb():
         mongo_client = MongoClient(MONGO_DB_URI)
         db = mongo_client.get_database("asfilter")
 
-        try:
-            collection_names = db.list_collection_names()
-        except AttributeError:
-            collection_names = db.list_collections_names()
-
+        collection_names = db.list_collection_names()
+        
         if "groups" not in collection_names:
             db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
@@ -111,10 +105,7 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
     """Checks if the given user_id is an admin in the specified chat."""
     try:
         member = await client.get_chat_member(chat_id, user_id)
-        if hasattr(enums, 'ChatMemberStatus'):
-            return member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]
-        else:
-            return member.status in ["creator", "administrator"]
+        return member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]
     except (BadRequest, Forbidden):
         return False
     except Exception as e:
@@ -123,7 +114,7 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    if LOG_CHANNEL_ID is not None:
+    if LOG_CHANNEL_ID > 0:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except (BadRequest, Forbidden) as e:
@@ -148,33 +139,34 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     sent_details_msg = None
     forwarded_message_id = None
-    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
+    case_detail_url = "https://t.me/"
 
-    try:
-        details_message_text = (
-            f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
-            f"<b>📍 ग्रुप:</b> {original_message.chat.title} (<code>{chat_id}</code>)\n"
-            f"<b>👤 यूज़र:</b> {user.mention} (<code>{user.id}</code>)\n"
-            f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
-            f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
-            f"<b>🆔 केस ID:</b> <code>{case_id}</code>\n\n"
-            f"<b>➡️ कारण:</b> {reason}\n"
-            f"<b>➡️ मूल मैसेज:</b> ||{message_text}||\n"
-        )
-        sent_details_msg = await client.send_message(
-            chat_id=CASE_CHANNEL_ID,
-            text=details_message_text,
-            parse_mode=enums.ParseMode.HTML
-        )
-        forwarded_message_id = sent_details_msg.id
+    if CASE_CHANNEL_ID > 0 and CASE_CHANNEL_USERNAME:
+        try:
+            details_message_text = (
+                f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
+                f"<b>📍 ग्रुप:</b> {original_message.chat.title} (<code>{chat_id}</code>)\n"
+                f"<b>👤 यूज़र:</b> {user.mention} (<code>{user.id}</code>)\n"
+                f"<b>📝 यूज़रनेम:</b> @{user.username if user.username else 'N/A'}\n"
+                f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+                f"<b>🆔 केस ID:</b> <code>{case_id}</code>\n\n"
+                f"<b>➡️ कारण:</b> {reason}\n"
+                f"<b>➡️ मूल मैसेज:</b> ||{message_text}||\n"
+            )
+            sent_details_msg = await client.send_message(
+                chat_id=CASE_CHANNEL_ID,
+                text=details_message_text,
+                parse_mode=enums.ParseMode.HTML
+            )
+            forwarded_message_id = sent_details_msg.id
 
-        if sent_details_msg:
-            channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-            case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
-            logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
+            if sent_details_msg:
+                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
+                logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
 
-    except Exception as e:
-        logger.error(f"Error sending incident details to case channel: {e}")
+        except Exception as e:
+            logger.error(f"Error sending incident details to case channel: Peer id invalid: {CASE_CHANNEL_ID}")
 
     if db is not None and db.incidents is not None:
         try:
@@ -240,7 +232,6 @@ async def start(client: Client, message: Message) -> None:
     chat = message.chat
     bot_info = await client.get_me()
     bot_name = bot_info.first_name
-    bot_username = bot_info.username
 
     if chat.type == enums.ChatType.PRIVATE:
         welcome_message = (
@@ -736,6 +727,9 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     chat = message.chat
     message_text = message.text
 
+    if not user:
+        return
+
     is_sender_admin = await is_group_admin(chat.id, user.id)
 
     # Check for profanity
@@ -743,29 +737,17 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity)", message, "abuse")
         return
 
-    # Check for URLs directly in the message
-    if URL_PATTERN.search(message_text) and not is_sender_admin:
-        await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
-        return
-
-    # Check for bio link if the user is not an admin
+    # Check for bio link if the user is not an admin and not whitelisted
     if not is_sender_admin and not await is_biolink_whitelisted(user.id):
         try:
             user_profile = await client.get_chat(user.id)
             user_bio = user_profile.bio or ""
             if URL_PATTERN.search(user_bio):
-                try:
-                    await message.delete()
-                    logger.info(f"Deleted message from user with bio link: {user.id}")
-                except Exception as e:
-                    logger.error(f"Could not delete message for user {user.id}: {e}")
-                    
+                await message.delete()
+                logger.info(f"Deleted message from user with bio link: {user.id}")
+                
                 warn_count = await increment_warnings(user.id, chat.id)
                 warn_limit = 3
-                
-                if db is not None and db.warnings is not None:
-                    warnings_doc = db.warnings.find_one({"user_id": user.id, "chat_id": chat.id})
-                    last_sent_message_id = warnings_doc.get("last_sent_message_id") if warnings_doc else None
 
                 warning_text = (
                     "🚨 <b>Chetavni</b> 🚨\n\n"
@@ -822,6 +804,10 @@ async def handle_all_messages(client: Client, message: Message) -> None:
             await reset_warnings(user.id, chat.id)
             logger.info(f"Warnings reset for user {user.id} as their bio is clean.")
 
+    # Check for URLs directly in the message
+    if URL_PATTERN.search(message_text) and not is_sender_admin:
+        await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
+        return
 
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
@@ -832,6 +818,9 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     user = edited_message.from_user
     chat = edited_message.chat
     
+    if not user:
+        return
+        
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
         try:
@@ -1156,11 +1145,13 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         reason = incident_data["reason"] if incident_data else "Ulanghan"
         case_channel_message_id = incident_data.get("case_channel_message_id") if incident_data else None
         
-        if case_channel_message_id:
+        if case_channel_message_id and CASE_CHANNEL_ID:
             channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
             case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
+        elif CASE_CHANNEL_USERNAME:
+             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
         else:
-            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
+            case_detail_url = "https://t.me/telegram" # Fallback
 
         user_obj = await client.get_chat_member(group_chat_id, target_user_id)
 
@@ -1212,3 +1203,4 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped.")
+ 
