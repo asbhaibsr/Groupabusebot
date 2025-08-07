@@ -16,6 +16,8 @@ class ProfanityFilter:
         self.mongo_uri = mongo_uri
 
         if self.mongo_uri:
+            # We don't connect immediately in __init__
+            # The connection will be established in an async method.
             pass
         else:
             logger.warning("No MongoDB URI provided. Using default profanity list only.")
@@ -32,11 +34,13 @@ class ProfanityFilter:
             self.db = self.mongo_client.get_database("asfilter")
             self.collection = self.db.get_collection("bad_words")
 
+            # Create collection and index if they don't exist
             collection_names = await self.db.list_collection_names()
             if "bad_words" not in collection_names:
                 await self.db.create_collection("bad_words")
                 logger.info("MongoDB 'bad_words' collection created.")
             
+            # Use await for creating the index
             await self.collection.create_index("word", unique=True)
             logger.info("MongoDB 'bad_words' collection unique index created/verified.")
             
@@ -59,6 +63,7 @@ class ProfanityFilter:
             self.collection = None
 
     def _load_default_bad_words(self):
+        # Comprehensive list of profanity in Hindi, English, and variations
         default_list = [
             # Common Hindi profanity and variations
             "bhadve", "bhadwe", "bhadva", "bhadvaa", "bhosdike", "bhosdiwale", "bhosad", "bhosada", 
@@ -157,6 +162,7 @@ class ProfanityFilter:
         """Asynchronously loads additional bad words from MongoDB and adds them to the existing set."""
         if self.collection: 
             try:
+                # Use await for find and to_list
                 cursor = self.collection.find({})
                 db_words = [doc['word'] for doc in await cursor.to_list(length=None) if 'word' in doc]
                 self.bad_words.update(db_words)
@@ -173,6 +179,7 @@ class ProfanityFilter:
             self.bad_words.add(normalized_word)
             if self.collection:
                 try:
+                    # Use await for the database operation
                     await self.collection.update_one(
                         {"word": normalized_word},
                         {"$set": {"added_at": datetime.utcnow()}},
@@ -189,6 +196,7 @@ class ProfanityFilter:
             return False
         text = text.lower()
         for word in self.bad_words:
+            # Use word boundaries to match whole words
             if re.search(r'\b' + re.escape(word) + r'\b', text):
                 return True
         return False
