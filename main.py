@@ -710,7 +710,7 @@ async def check_permissions(client: Client, message: Message):
             f"<b>✅ मैसेज हटा सकता है:</b> {perms.can_delete_messages}\n"
             f"<b>✅ सदस्यों को प्रतिबंधित कर सकता है:</b> {perms.can_restrict_members}\n"
             f"<b>✅ मैसेज पिन कर सकता है:</b> {perms.can_pin_messages}\n"
-            f"<b>✅ मैसेज भेज सकता है:</b> {perms.can_post_messages}\n" # <-- यह लाइन ठीक की गई है
+            f"<b>✅ मैसेज भेज सकता है:</b> {perms.can_post_messages}\n"
         )
         
         await message.reply_text(message_text, parse_mode=enums.ParseMode.HTML)
@@ -885,7 +885,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         else:
             actions_keyboard.append([InlineKeyboardButton("Approve Bio Link", callback_data=f"approve_bio_{target_user_id}_{group_chat_id}")])
 
-        actions_keyboard.append([InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")]) # <-- यह लाइन ठीक की गई है
+        actions_keyboard.append([InlineKeyboardButton("⬅️ Back to Notification", callback_data=f"back_to_notification_{target_user_id}_{group_chat_id}")])
         
         reply_markup = InlineKeyboardMarkup(actions_keyboard)
         await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
@@ -1054,7 +1054,6 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
     elif data.startswith("back_to_notification_"):
         parts = data.split('_')
-        # यहाँ indices 3 और 4 होनी चाहिए, 4 और 5 नहीं
         target_user_id = int(parts[3])
         group_chat_id = int(parts[4])
 
@@ -1075,7 +1074,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         elif CASE_CHANNEL_USERNAME:
              case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
         else:
-            case_detail_url = "https://t.me/telegram" # Fallback
+            case_detail_url = "https://t.me/telegram"
 
         user_obj = await client.get_chat_member(group_chat_id, target_user_id)
 
