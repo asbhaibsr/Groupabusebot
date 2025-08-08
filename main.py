@@ -22,9 +22,9 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0)) 
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0))
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534)) 
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
 
