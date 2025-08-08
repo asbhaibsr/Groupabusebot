@@ -5,14 +5,14 @@ import threading
 import asyncio
 import logging
 import re
-import random # Add this import
+import random
 from pymongo import MongoClient, ReturnDocument
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
-from pyrogram.errors import BadRequest, Forbidden, MessageNotModified
+from pyrogram.errors import BadRequest, Forbidden, MessageNotModified, FloodWait
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -41,7 +41,9 @@ USERNAME_PATTERN = re.compile(r'@\w+', re.IGNORECASE)
 # --- Tagging variables
 TAG_MESSAGES = {}
 ONGOING_TAGGING_TASKS = {}
-EMOJIS = ['👤', '👥', '📢', '📌', '🔔', '📣', '📯', '🔊']
+# Updated EMOJIS as per your request
+EMOJIS = ['😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂', '🙃', '🫠', '😉', '😊', '😇', '🥰', '😍', '🙂', '😘', '😙', '☺️', '🥲', '😋', '😛', '😜', '😝', '🤑', '🤗', '🤭', '🫢', '🫣', '😐', '🤨', '🤔', '🤐', '🫡', '🤥', '🫥', '😮‍💨', '😶‍🌫️', '🙄', '😏', '😒', '🙂‍↕️', '🫨', '🙂‍↕️', '🤥', '😔', '😪', '😴', '🤧', '😷', '🤢', '🤕', '🥶', '🥵', '😵', '🤯', '🤠', '🥳', '🙁', '🥸', '🫤', '🫤', '🤓', '😕', '🧐', '☹️', '😮', '😦', '🥺', '😲', '😳', '😥', '😰', '😧', '😢', '😭', '😱', '😡', '😣', '🥱', '😓', '😫', '😩', '😠', '🤬', '🤡', '👿', '☠️', '💀', '💀', '👺', '👽', '👹', '👾', '👻', '😺', '😸', '😹', '🙈', '😻', '😾', '😽', '😿', '🙀', '💋', '💌', '🙉', '💝', '💖', '💗', '❤️‍🩹', '💕', '❤️‍🔥', '💟', '💔', '❣️', '🧡', '💛', '🩷', '💙', '❤️', '💜', '🤎', '💫', '🩶', '💢', '🤍', '💯', '💣', '💬', '💨', '🗯', '💦', '💭', '💤', '🖕', '🫦', '👄', '👅', '🧠', '👀', '👁', '🦴', '🦷', '🤳', '👶', '🧒', '👦', '🧑', '👱', '👨', '🧔', '🧔‍♀️', '👨‍🦱', '👨‍🦳', '👨‍🦲', '👩‍🦳', '👩‍🦰', '🧑‍🦱', '👩‍🦱', '👩‍🦰', '🧑‍🦰', '🫆', '🫂', '🗣', '👥️', '👤', '🧑‍🧒', '🧑‍🧑‍🧒‍🧒', '🧑‍🧒‍🧒', '🧑‍🧑‍🧒‍🧒']
+
 
 # --- New Constants from your first snippet ---
 DEFAULT_WARNING_LIMIT = 3
@@ -334,8 +336,8 @@ async def help_handler(client: Client, message: Message):
         f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
         f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
         f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein (10 users per message).\n"
-        "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein (10 users per message).\n"
+        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
+        "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
         "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
         "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
         "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
@@ -633,30 +635,58 @@ async def tag_all(client: Client, message: Message) -> None:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
             return
 
-        chunk_size = 10
+        chunk_size = 10  # Updated to 10 users per message
         tag_messages_to_delete = []
 
         async def tag_task():
-            for i in range(0, len(members_to_tag), chunk_size):
-                if chat_id not in ONGOING_TAGGING_TASKS:
-                    break
-                
-                chunk = members_to_tag[i:i + chunk_size]
-                final_message = " ".join(chunk)
-                
-                final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+            nonlocal tag_messages_to_delete
+            try:
+                for i in range(0, len(members_to_tag), chunk_size):
+                    if chat_id not in ONGOING_TAGGING_TASKS:
+                        return
+                    
+                    chunk = members_to_tag[i:i + chunk_size]
+                    final_message = " ".join(chunk)
+                    
+                    final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
-                sent_message = await message.reply_text(
-                    final_message,
-                    parse_mode=enums.ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
-                tag_messages_to_delete.append(sent_message.id)
-                await asyncio.sleep(1)
+                    sent_message = await message.reply_text(
+                        final_message,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                    tag_messages_to_delete.append(sent_message.id)
+                    await asyncio.sleep(4)
 
-            if chat_id in ONGOING_TAGGING_TASKS:
                 ONGOING_TAGGING_TASKS.pop(chat_id)
-                await message.reply_text("टैगिंग पूरा हुआ!")
+                bot_info = await client.get_me()
+                bot_username = bot_info.username
+                add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
+
+                final_message_text = "सभी users को सफलतापूर्वक tag कर दिया गया है!"
+                keyboard = [
+                    [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
+                    [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await message.reply_text(
+                    final_message_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+                await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
+
+            except asyncio.CancelledError:
+                logger.info(f"Tagging task for chat {chat_id} was cancelled.")
+            except FloodWait as e:
+                logger.warning(f"FloodWait error in /tagall. Sleeping for {e.value} seconds.")
+                await asyncio.sleep(e.value)
+            except Exception as e:
+                logger.error(f"Error during tagging task: {e}")
+            finally:
+                if chat_id in ONGOING_TAGGING_TASKS:
+                    ONGOING_TAGGING_TASKS.pop(chat_id)
         
         task = asyncio.create_task(tag_task())
         ONGOING_TAGGING_TASKS[chat_id] = task
@@ -700,30 +730,58 @@ async def online_tag(client: Client, message: Message) -> None:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
             return
 
-        chunk_size = 10
+        chunk_size = 10  # Updated to 10 users per message
         tag_messages_to_delete = []
 
         async def online_tag_task():
-            for i in range(0, len(online_members_to_tag), chunk_size):
-                if chat_id not in ONGOING_TAGGING_TASKS:
-                    break
+            nonlocal tag_messages_to_delete
+            try:
+                for i in range(0, len(online_members_to_tag), chunk_size):
+                    if chat_id not in ONGOING_TAGGING_TASKS:
+                        return
 
-                chunk = online_members_to_tag[i:i + chunk_size]
-                final_message = " ".join(chunk)
-                
-                final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+                    chunk = online_members_to_tag[i:i + chunk_size]
+                    final_message = " ".join(chunk)
+                    
+                    final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
-                sent_message = await message.reply_text(
-                    final_message,
-                    parse_mode=enums.ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
-                tag_messages_to_delete.append(sent_message.id)
-                await asyncio.sleep(1)
+                    sent_message = await message.reply_text(
+                        final_message,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                    tag_messages_to_delete.append(sent_message.id)
+                    await asyncio.sleep(4)
 
-            if chat_id in ONGOING_TAGGING_TASKS:
                 ONGOING_TAGGING_TASKS.pop(chat_id)
-                await message.reply_text("टैगिंग पूरा हुआ!")
+                bot_info = await client.get_me()
+                bot_username = bot_info.username
+                add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
+                
+                final_message_text = "सभी users को सफलतापूर्वक tag कर दिया गया है!"
+                keyboard = [
+                    [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
+                    [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await message.reply_text(
+                    final_message_text,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+                await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
+            
+            except asyncio.CancelledError:
+                logger.info(f"Online tagging task for chat {chat_id} was cancelled.")
+            except FloodWait as e:
+                logger.warning(f"FloodWait error in /onlinetag. Sleeping for {e.value} seconds.")
+                await asyncio.sleep(e.value)
+            except Exception as e:
+                logger.error(f"Error during online tagging task: {e}")
+            finally:
+                if chat_id in ONGOING_TAGGING_TASKS:
+                    ONGOING_TAGGING_TASKS.pop(chat_id)
         
         task = asyncio.create_task(online_tag_task())
         ONGOING_TAGGING_TASKS[chat_id] = task
@@ -790,7 +848,6 @@ async def tag_stop(client: Client, message: Message) -> None:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
-    # Check and stop ongoing tagging process first
     if chat_id in ONGOING_TAGGING_TASKS:
         try:
             task = ONGOING_TAGGING_TASKS.pop(chat_id)
@@ -827,6 +884,7 @@ async def tag_stop(client: Client, message: Message) -> None:
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML
         )
+        await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
         logger.info(f"Admin {message.from_user.id} cleaned up old tagging messages in chat {chat_id}.")
 
     except Exception as e:
@@ -900,8 +958,8 @@ async def check_and_delete_biolink(client: Client, message: Message):
         return False
     
     try:
-        user_chat_obj = await client.get_chat(user_id)
-        user_bio = user_chat_obj.bio or ""
+        user_profile = await client.get_chat(user_id)
+        user_bio = user_profile.bio or ""
         
         if URL_PATTERN.search(user_bio):
             try:
@@ -949,11 +1007,11 @@ async def check_and_delete_biolink(client: Client, message: Message):
                             if penalty == "mute":
                                 await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
                                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                                await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                                await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
                             else:
                                 await client.ban_chat_member(chat_id, user.id)
                                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                                await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                                await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
 
                             log_message = (
                                 f"🚨 <b>Bio-Link Punishment</b> 🚨\n\n"
@@ -971,11 +1029,11 @@ async def check_and_delete_biolink(client: Client, message: Message):
                         if penalty == "mute":
                             await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
                             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                            await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                            await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
                         else:
                             await client.ban_chat_member(chat_id, user.id)
                             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                            await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                            await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
 
                         log_message = (
                             f"🚨 <b>Bio-Link Direct Punishment</b> 🚨\n\n"
@@ -996,7 +1054,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
         return False
 
     except Exception:
-        return False
+        pass
 
 
 # --- Handler for Edited Messages ---
@@ -1382,7 +1440,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Ban کرتے समय error हुई: {e}")
+                await query.message.edit_text(f"Ban करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1454,7 +1512,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 try:
                     await query.message.edit_text(f"✅ {mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
-                pass
+                    pass
             logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
 
         except Exception as e:
