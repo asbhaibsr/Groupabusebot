@@ -22,15 +22,18 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# NOTE: Set a default value to prevent errors if the variable is not set.
+# You MUST change these IDs to your actual channel IDs.
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534)) 
 CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
 CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
+# NOTE: Replace this with your actual admin IDs.
 ADMIN_USER_IDS = [7315805581]
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
+URL_PATTERN = re.compile(r'https?://(?:www\.|m\.)?(?:t\.me/|telegra\.ph|github|bit\.ly|tinyurl|discord|linktr|instabio|allmylinks|)\S*')
 TAG_EMOJIS = ["🎉", "✨", "💫", "🌟", "🎈", "🎊", "🔥", "💖", "⚡️", "🌈"]
 TAG_MESSAGES = {}
 
@@ -743,19 +746,6 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity)", message, "abuse")
         return
 
-    # Check for bio link if the user is not an admin and not whitelisted
-    if not is_sender_admin and not await is_biolink_whitelisted(user.id):
-        try:
-            user_profile = await client.get_users(user.id)
-            user_bio = user_profile.bio or ""
-            if URL_PATTERN.search(user_bio):
-                await handle_incident(client, chat.id, user, "Bio में लिंक", message, "bio_link")
-                return
-        except BadRequest as e:
-            logger.warning(f"Could not get user info for user {user.id}: {e}")
-        except Exception as e:
-            logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
-
     # Check for URLs directly in the message
     if URL_PATTERN.search(message_text) and not is_sender_admin:
         await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
@@ -775,7 +765,16 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
+        if profanity_filter is not None and profanity_filter.contains_profanity(edited_message.text):
+            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में गाली-गलौज", edited_message, "edited_message_abuse")
+            return
+        
+        if URL_PATTERN.search(edited_message.text):
+            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक", edited_message, "edited_message_link")
+            return
+            
         await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज", edited_message, "edited_message")
+
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -868,10 +867,13 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user_id = int(parts[3])
         group_chat_id = int(parts[4])
         
-        target_user = await client.get_chat_member(group_chat_id, target_user_id)
-        target_user_mention = target_user.user.mention
-        
-        is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
+        try:
+            target_user = await client.get_chat_member(group_chat_id, target_user_id)
+            target_user_mention = target_user.user.mention
+        except Exception:
+            target_user_mention = f"User (<code>{target_user_id}</code>)"
+
+        is_biolink_approved = await is_biolink_whitelisted(target_user_id)
 
         actions_text = (
             f"{target_user_mention} ({target_user_id}) ke liye actions:\n"
@@ -902,8 +904,11 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         await add_biolink_whitelist(target_user_id)
         await reset_warnings(target_user_id, chat_id)
         
-        target_user = await client.get_chat_member(chat_id, target_user_id)
-        mention = target_user.user.mention
+        try:
+            target_user = await client.get_chat_member(chat_id, target_user_id)
+            mention = target_user.user.mention
+        except Exception:
+            mention = f"User (<code>{target_user_id}</code>)"
 
         keyboard = [
             [
@@ -925,8 +930,11 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         chat_id = int(data.split('_')[3])
         await remove_biolink_whitelist(target_user_id)
 
-        target_user = await client.get_chat_member(chat_id, target_user_id)
-        mention = target_user.user.mention
+        try:
+            target_user = await client.get_chat_member(chat_id, target_user_id)
+            mention = target_user.user.mention
+        except Exception:
+            mention = f"User (<code>{target_user_id}</code>)"
         
         keyboard = [
             [
@@ -975,9 +983,13 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 permissions=permissions,
                 until_date=until_date
             )
-            target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-            logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
+            try:
+                target_user = await client.get_chat_member(group_chat_id, target_user_id)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
+            except Exception:
+                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
             logger.error(f"Error muting user {target_user_id} in {group_chat_id}: {e}")
@@ -988,9 +1000,12 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
-            target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-            logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
+            try:
+                target_user = await client.get_chat_member(group_chat_id, target_user_id)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
+            except Exception:
+                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             await query.edit_message_text(f"Ban karte samay error hui: {e}")
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1001,9 +1016,12 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
-            target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-            logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
+            try:
+                target_user = await client.get_chat_member(group_chat_id, target_user_id)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
+            except Exception:
+                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             await query.edit_message_text(f"Kick karte samay error hui: {e}")
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
@@ -1018,7 +1036,11 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             return
 
         try:
-            target_user = await client.get_chat_member(group_chat_id, target_user_id)
+            try:
+                target_user = await client.get_chat_member(group_chat_id, target_user_id)
+                user_mention = target_user.user.mention
+            except Exception:
+                user_mention = f"User (<code>{target_user_id}</code>)"
             
             warnings_doc = db.warnings.find_one_and_update(
                 {"user_id": target_user_id, "chat_id": group_chat_id},
@@ -1030,7 +1052,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             
             warn_message = (
                 f"🚨 <b>Chetavni</b>\n\n"
-                f"➡️ {target_user.user.mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
+                f"➡️ {user_mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
                 f"➡️ <b>Yeh aapki {warn_count}vi chetavni hai.</b>"
             )
             
@@ -1045,13 +1067,13 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 )
                 permanent_mute_message = (
                     f"❌ <b>Permanent Mute</b>\n\n"
-                    f"➡️ {target_user.user.mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
+                    f"➡️ {user_mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
                 )
                 await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ {user_mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ {user_mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
                 
         except Exception as e:
@@ -1084,12 +1106,15 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         else:
             case_detail_url = "https://t.me/telegram"
 
-
-        user_obj = await client.get_chat_member(group_chat_id, target_user_id)
-
+        try:
+            user_obj = await client.get_chat_member(group_chat_id, target_user_id)
+            user_mention = user_obj.user.mention
+        except Exception:
+            user_mention = f"User (<code>{target_user_id}</code>)"
+            
         notification_message = (
             f"🚨 <b>Group mein Niyam Ulanghan!</b>\n\n"
-            f"➡️ <b>User:</b> {user_obj.user.mention}\n"
+            f"➡️ <b>User:</b> {user_mention}\n"
             f"➡️ <b>Reason:</b> \"{reason} ki wajah se message hata diya gaya hai।\"\n\n"
             f"➡️ <b>Case ID:</b> <code>{case_id_value}</code>"
         )
