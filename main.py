@@ -80,6 +80,9 @@ def init_mongodb():
         db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
         db.config.create_index("chat_id", unique=True)
         db.whitelist.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
+        
+        # New collection for biolink exceptions (from your other code)
+        db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
@@ -134,6 +137,7 @@ def update_config_sync(chat_id, mode=None, limit=None, penalty=None):
 
 def is_whitelisted_sync(chat_id, user_id):
     if db is None: return False
+    # I am assuming 'whitelist' collection handles both types of exceptions.
     return db.whitelist.find_one({"chat_id": chat_id, "user_id": user_id}) is not None
 
 def add_whitelist_sync(chat_id, user_id):
@@ -166,7 +170,6 @@ def increment_warning_sync(chat_id, user_id):
 def reset_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
-
 
 # --- Common Incident Handler Function ---
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
@@ -592,7 +595,9 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             try:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
+                # Check for bio link and handle it
                 if URL_PATTERN.search(bio):
+                    # Here we call the handle_bio_link function, just like in the main handler
                     await handle_bio_link(client, message, member, chat)
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
@@ -775,6 +780,7 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
         await message.reply_text("Please grant me delete permission.")
         return
 
+    # The rest of the logic with warnings and punishments remains the same as your original code
     mode, limit, penalty = get_config_sync(chat.id)
 
     full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
@@ -1057,7 +1063,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         remove_whitelist_sync(chat_id, target_id)
         try:
             user = await client.get_chat_member(chat_id, target_id)
-            full_name = f"{user.user.first_name}{(' ' + user.user.last_name) if user.user.last_name else ''}"
+            full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
             mention = f"[{full_name}](tg://user?id={target_id})"
         except Exception:
             mention = f"User (`{target_id}`)"
