@@ -15,16 +15,16 @@ from pyrogram.errors import BadRequest, Forbidden
 
 from flask import Flask, request, jsonify
 
-# Custom module import
+# Custom module import (ensure this file exists and is correctly configured)
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0)) # Set to 0 if not provided
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0)) # Set to 0 if not provided
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME") # Get from env
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0)) 
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", 0))
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
 
@@ -124,6 +124,45 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     else:
         logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
+# --- Helper functions for warnings and biolink exceptions ---
+async def get_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return 0
+    warnings_doc = db.warnings.find_one({"user_id": user_id, "chat_id": chat_id})
+    return warnings_doc.get("count", 0) if warnings_doc else 0
+
+async def increment_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return 1
+    warnings_doc = db.warnings.find_one_and_update(
+        {"user_id": user_id, "chat_id": chat_id},
+        {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+    return warnings_doc['count'] if warnings_doc else 1
+
+async def reset_warnings(user_id: int, chat_id: int):
+    if db is None or db.warnings is None:
+        return
+    db.warnings.delete_one({"user_id": user_id, "chat_id": chat_id})
+
+async def is_biolink_whitelisted(user_id: int) -> bool:
+    if db is None or db.biolink_exceptions is None:
+        return False
+    return db.biolink_exceptions.find_one({"user_id": user_id}) is not None
+
+async def add_biolink_whitelist(user_id: int):
+    if db is None or db.biolink_exceptions is None:
+        return
+    db.biolink_exceptions.update_one({"user_id": user_id}, {"$set": {"timestamp": datetime.now()}}, upsert=True)
+
+async def remove_biolink_whitelist(user_id: int):
+    if db is None or db.biolink_exceptions is None:
+        return
+    db.biolink_exceptions.delete_one({"user_id": user_id})
+
+# --- Common Incident Handler Function ---
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
     """Common function to handle all incidents (abuse, bio link, edited message)."""
     original_message_id = original_message.id
@@ -224,7 +263,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             )
         except Exception as simple_e:
             logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
-
+            
 # --- Bot Commands Handlers ---
 @client.on_message(filters.command("start"))
 async def start(client: Client, message: Message) -> None:
@@ -681,45 +720,6 @@ async def check_permissions(client: Client, message: Message):
         await message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
 
 
-# --- Helper functions for warnings and biolink exceptions ---
-async def get_warnings(user_id: int, chat_id: int):
-    if db is None or db.warnings is None:
-        return 0
-    warnings_doc = db.warnings.find_one({"user_id": user_id, "chat_id": chat_id})
-    return warnings_doc.get("count", 0) if warnings_doc else 0
-
-async def increment_warnings(user_id: int, chat_id: int):
-    if db is None or db.warnings is None:
-        return 1
-    warnings_doc = db.warnings.find_one_and_update(
-        {"user_id": user_id, "chat_id": chat_id},
-        {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER
-    )
-    return warnings_doc['count'] if warnings_doc else 1
-
-async def reset_warnings(user_id: int, chat_id: int):
-    if db is None or db.warnings is None:
-        return
-    db.warnings.delete_one({"user_id": user_id, "chat_id": chat_id})
-
-async def is_biolink_whitelisted(user_id: int) -> bool:
-    if db is None or db.biolink_exceptions is None:
-        return False
-    return db.biolink_exceptions.find_one({"user_id": user_id}) is not None
-
-async def add_biolink_whitelist(user_id: int):
-    if db is None or db.biolink_exceptions is None:
-        return
-    db.biolink_exceptions.update_one({"user_id": user_id}, {"$set": {"timestamp": datetime.now()}}, upsert=True)
-
-async def remove_biolink_whitelist(user_id: int):
-    if db is None or db.biolink_exceptions is None:
-        return
-    db.biolink_exceptions.delete_one({"user_id": user_id})
-
-
 # --- Core Message Handler (Profanity, Bio Link, URL in message) ---
 @client.on_message(filters.text & filters.group & ~filters.command([]) & ~filters.via_bot)
 async def handle_all_messages(client: Client, message: Message) -> None:
@@ -743,66 +743,12 @@ async def handle_all_messages(client: Client, message: Message) -> None:
             user_profile = await client.get_chat(user.id)
             user_bio = user_profile.bio or ""
             if URL_PATTERN.search(user_bio):
-                await message.delete()
-                logger.info(f"Deleted message from user with bio link: {user.id}")
-                
-                warn_count = await increment_warnings(user.id, chat.id)
-                warn_limit = 3
-
-                warning_text = (
-                    "🚨 <b>Chetavni</b> 🚨\n\n"
-                    f"👤 <b>User:</b> {user.mention} (<code>{user.id}</code>)\n"
-                    "❌ <b>Karan:</b> Bio mein link mila\n"
-                    f"⚠️ <b>Chetavni:</b> {warn_count}/{warn_limit}\n\n"
-                    "<b>Notice: Kripya apne bio se links hata dein.</b>"
-                )
-                
-                keyboard = [
-                    [
-                        InlineKeyboardButton("❌ Chetavni Cancel", callback_data=f"cancel_warn_{user.id}_{chat.id}"),
-                        InlineKeyboardButton("✅ Bio Link Approve", callback_data=f"approve_bio_{user.id}_{chat.id}")
-                    ],
-                    [InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{message.id}")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-
-                sent_message = await message.reply_text(warning_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
-                
-                if db is not None and db.warnings is not None:
-                    db.warnings.update_one(
-                        {"user_id": user.id, "chat_id": chat.id},
-                        {"$set": {"last_sent_message_id": sent_message.id}}
-                    )
-
-                if warn_count >= warn_limit:
-                    try:
-                        await client.restrict_chat_member(
-                            chat_id=chat.id,
-                            user_id=user.id,
-                            permissions=ChatPermissions(can_send_messages=False)
-                        )
-                        await remove_biolink_whitelist(user.id)
-                        await reset_warnings(user.id, chat.id)
-                        
-                        mute_text = (
-                            f"<b>{user.mention}</b> ko <b>mute</b> kar diya gaya hai kyunki unhone bio link ke liye {warn_limit} warnings cross kar di hain."
-                        )
-                        await sent_message.edit_text(mute_text, parse_mode=enums.ParseMode.HTML, reply_markup=None)
-                    except Exception as e:
-                        logger.error(f"Error muting user {user.id} after warnings: {e}")
-                        await sent_message.edit_text(
-                            f"Bot ke paas {user.mention} ko mute karne ki permission nahi hai.",
-                            parse_mode=enums.ParseMode.HTML
-                        )
+                await handle_incident(client, chat.id, user, "Bio में लिंक", message, "bio_link")
                 return
         except BadRequest as e:
             logger.warning(f"Could not get chat info for user {user.id}: {e}")
         except Exception as e:
             logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
-    else:
-        if await get_warnings(user.id, chat.id) > 0:
-            await reset_warnings(user.id, chat.id)
-            logger.info(f"Warnings reset for user {user.id} as their bio is clean.")
 
     # Check for URLs directly in the message
     if URL_PATTERN.search(message_text) and not is_sender_admin:
@@ -823,30 +769,7 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
-        try:
-            await edited_message.delete()
-            logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
-        except Exception as e:
-            logger.error(f"Error deleting edited message in {chat.id}: {e}. Bot needs 'Delete Messages' permission.")
-            
-        notification_message = f"🚨 {user.mention} ne ek message edit kiya jo delete kar diya gaya hai."
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
-                InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat.id}")
-            ],
-            [
-                InlineKeyboardButton("🗑️ Band Karen", callback_data=f"close_message_{edited_message.id}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        try:
-            await client.send_message(chat.id, notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            logger.error(f"Error sending edited message notification in chat {chat.id}: {e}")
-
+        await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज", edited_message, "edited_message")
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -1203,4 +1126,3 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped.")
- 
