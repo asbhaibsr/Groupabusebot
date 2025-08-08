@@ -746,6 +746,10 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if await is_group_admin(chat.id, user.id) or is_whitelisted_sync(chat.id, user.id):
         return
 
+    # Call the biolink check function first
+    if await check_and_delete_biolink(client, message):
+        return
+
     # 1. Check for Profanity
     if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
@@ -755,117 +759,130 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if URL_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message) 🔗", message, "link_in_message")
         return
+    
 
-    # 3. Check for URL in Bio
+# --- UPDATED BioLink Check Function (from your code snippet) ---
+async def check_and_delete_biolink(client: Client, message: Message):
+    """
+    Checks if a user has a link in their bio and deletes their message.
+    """
+    user = message.from_user
+    user_id = user.id
+    chat_id = message.chat.id
+
+    if not user:
+        return False
+    
+    # Check if the sender is an admin or whitelisted, if so, do nothing
+    is_sender_admin = await is_group_admin(chat_id, user_id)
+    is_biolink_exception = is_whitelisted_sync(chat_id, user_id)
+
+    if is_sender_admin or is_biolink_exception:
+        return False
+    
     try:
-        user_chat = await client.get_chat(user.id)
-        bio = user_chat.bio or ""
-    except Exception as e:
-        logger.error(f"Could not fetch bio for user {user.id}: {e}")
-        bio = ""
-
-    if URL_PATTERN.search(bio):
-        await handle_bio_link(client, message, user, chat)
-    else:
-        reset_warnings_sync(chat.id, user.id)
-
-
-async def handle_bio_link(client: Client, message: Message, user, chat):
-    # This function handles the bio link logic separately for clarity
-
-    try:
-        await message.delete()
-    except errors.MessageDeleteForbidden:
-        # If bot can't delete, it can't punish either, so return.
-        await message.reply_text("Please grant me delete permission.")
-        return
-
-    # The rest of the logic with warnings and punishments remains the same as your original code
-    mode, limit, penalty = get_config_sync(chat.id)
-
-    full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-    mention = f"[{full_name}](tg://user?id={user.id})"
-
-    if mode == "warn":
-        count = increment_warning_sync(chat.id, user.id)
-
-        warning_text = (
-            "🚨 <b>Bio-Link Detected</b>\n\n"
-            f"- <b>User:</b> {mention}\n"
-            f"- <b>Reason:</b> A link was found in your bio.\n"
-            f"- <b>Warning:</b> {count}/{limit}\n\n"
-            "Please remove the link from your bio to avoid being restricted."
-        )
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel Warning", callback_data=f"cancel_warn_{user.id}"),
-             InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
-            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
-        ])
-
-        try:
-            sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-            
-            # Log the bio-link warning
-            log_message = (
-                f"🚨 <b>Bio-Link Detected (Warning)</b> 🚨\n\n"
-                f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
-                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
-                f"<b>Current Warnings:</b> {count}/{limit}\n"
-                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-            )
-            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
-
-        except Exception as e:
-            logger.error(f"Error sending bio-link warning: {e}")
-            return
-
-        if count >= limit:
+        # Fetch the user's profile to get their bio
+        user_chat_obj = await client.get_chat(user_id)
+        user_bio = user_chat_obj.bio or ""
+        
+        # Check if the user's bio contains any URL
+        if URL_PATTERN.search(user_bio):
             try:
-                if penalty == "mute":
-                    await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                    await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                else:  # ban
-                    await client.ban_chat_member(chat.id, user.id)
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                    await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                # Delete the message
+                await message.delete()
 
-                # Log the final punishment
-                log_message = (
-                    f"🚨 <b>Bio-Link Punishment</b> 🚨\n\n"
-                    f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
-                    f"<b>User:</b> {user.mention} (`{user.id}`)\n"
-                    f"<b>Action:</b> User was {penalty}d after {limit} warnings.\n"
-                    f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-                )
-                await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+                # Get group settings for punishment
+                mode, limit, penalty = get_config_sync(chat_id)
+                full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
+                mention = f"[{full_name}](tg://user?id={user.id})"
 
-            except errors.ChatAdminRequired:
-                await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-    else:  # direct mute or ban
-        try:
-            if penalty == "mute":
-                await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-            else:  # ban
-                await client.ban_chat_member(chat.id, user.id)
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                if mode == "warn":
+                    count = increment_warning_sync(chat_id, user.id)
 
-            # Log the direct punishment
-            log_message = (
-                f"🚨 <b>Bio-Link Direct Punishment</b> 🚨\n\n"
-                f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
-                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
-                f"<b>Action:</b> User was directly {penalty}d.\n"
-                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-            )
-            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+                    warning_text = (
+                        "🚨 <b>Bio-Link Detected</b>\n\n"
+                        f"- <b>User:</b> {mention}\n"
+                        f"- <b>Reason:</b> A link was found in your bio.\n"
+                        f"- <b>Warning:</b> {count}/{limit}\n\n"
+                        "Please remove the link from your bio to avoid being restricted."
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ Cancel Warning", callback_data=f"cancel_warn_{user.id}"),
+                         InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
+                        [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+                    ])
 
-        except errors.ChatAdminRequired:
-            return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
+                    try:
+                        sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+                        
+                        log_message = (
+                            f"🚨 <b>Bio-Link Detected (Warning)</b> 🚨\n\n"
+                            f"<b>Group:</b> {message.chat.title} (`{chat_id}`)\n"
+                            f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                            f"<b>Current Warnings:</b> {count}/{limit}\n"
+                            f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+                        )
+                        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
+                    except Exception as e:
+                        logger.error(f"Error sending bio-link warning: {e}")
+                        return True # Message was still deleted, so return True
+
+                    if count >= limit:
+                        try:
+                            if penalty == "mute":
+                                await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
+                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                                await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                            else:  # ban
+                                await client.ban_chat_member(chat_id, user.id)
+                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                                await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+                            log_message = (
+                                f"🚨 <b>Bio-Link Punishment</b> 🚨\n\n"
+                                f"<b>Group:</b> {message.chat.title} (`{chat_id}`)\n"
+                                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                                f"<b>Action:</b> User was {penalty}d after {limit} warnings.\n"
+                                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+                            )
+                            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
+                        except errors.ChatAdminRequired:
+                            await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
+                else:  # direct mute or ban
+                    try:
+                        if penalty == "mute":
+                            await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
+                            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                            await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                        else:  # ban
+                            await client.ban_chat_member(chat_id, user.id)
+                            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                            await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+                        log_message = (
+                            f"🚨 <b>Bio-Link Direct Punishment</b> 🚨\n\n"
+                            f"<b>Group:</b> {message.chat.title} (`{chat_id}`)\n"
+                            f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                            f"<b>Action:</b> User was directly {penalty}d.\n"
+                            f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+                        )
+                        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
+                    except errors.ChatAdminRequired:
+                        return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
+
+                # Return True to indicate that the message was deleted and a biolink was found
+                return True
+            except Exception:
+                pass # Ignore errors if deletion fails
+                    
+        # Return False if no action was taken
+        return False
+
+    except Exception:
+        return False
 
 
 # --- Handler for Edited Messages ---
