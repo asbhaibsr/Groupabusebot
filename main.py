@@ -324,7 +324,8 @@ async def help_handler(client: Client, message: Message):
         f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
         f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
         f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
+        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein (10 users per message).\n"
+        "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein (10 users per message).\n"
         "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
         "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
         "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
@@ -607,32 +608,87 @@ async def tag_all(client: Client, message: Message) -> None:
 
     chat_id = message.chat.id
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
-
+    
     try:
-        tagged_members = []
+        members_to_tag = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
-                tagged_members.append(member.user.mention)
-        
-        if not tagged_members:
-            await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।")
+                full_name = f"{member.user.first_name}{(' ' + member.user.last_name) if member.user.last_name else ''}"
+                members_to_tag.append(f"👤 <a href='tg://user?id={member.user.id}'>{full_name}</a>")
+
+        if not members_to_tag:
+            await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
             return
 
-        final_message = f"<b>टैग किए गए सदस्य:</b>\n"
-        final_message += " ".join(tagged_members)
-        final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+        chunk_size = 10
+        for i in range(0, len(members_to_tag), chunk_size):
+            chunk = members_to_tag[i:i + chunk_size]
+            final_message = " ".join(chunk)
+            
+            if i == 0:
+                final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
-        sent_message = await message.reply_text(
-            final_message,
-            parse_mode=enums.ParseMode.HTML
-        )
+            sent_message = await message.reply_text(
+                final_message,
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
 
-        if chat_id not in TAG_MESSAGES:
-            TAG_MESSAGES[chat_id] = []
-        TAG_MESSAGES[chat_id].append(sent_message.id)
+            if chat_id not in TAG_MESSAGES:
+                TAG_MESSAGES[chat_id] = []
+            TAG_MESSAGES[chat_id].append(sent_message.id)
+            await asyncio.sleep(1) # 1-second delay between messages
 
+    except errors.MessageTooLong:
+        await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
     except Exception as e:
         logger.error(f"Error in /tagall command: {e}")
+        await message.reply_text(f"टैग करते समय error हुई: {e}")
+
+@client.on_message(filters.command("onlinetag") & filters.group)
+async def online_tag(client: Client, message: Message) -> None:
+    is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
+    if not is_sender_admin:
+        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
+        return
+
+    chat_id = message.chat.id
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Online members, attention please!"
+
+    try:
+        online_members_to_tag = []
+        async for member in client.get_chat_members(chat_id):
+            if not member.user.is_bot and member.user.status in [enums.UserStatus.ONLINE, enums.UserStatus.RECENTLY]:
+                full_name = f"{member.user.first_name}{(' ' + member.user.last_name) if member.user.last_name else ''}"
+                online_members_to_tag.append(f"🟢 <a href='tg://user?id={member.user.id}'>{full_name}</a>")
+
+        if not online_members_to_tag:
+            await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
+            return
+
+        chunk_size = 10
+        for i in range(0, len(online_members_to_tag), chunk_size):
+            chunk = online_members_to_tag[i:i + chunk_size]
+            final_message = " ".join(chunk)
+            
+            if i == 0:
+                final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+
+            sent_message = await message.reply_text(
+                final_message,
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            
+            if chat_id not in TAG_MESSAGES:
+                TAG_MESSAGES[chat_id] = []
+            TAG_MESSAGES[chat_id].append(sent_message.id)
+            await asyncio.sleep(1) # 1-second delay between messages
+
+    except errors.MessageTooLong:
+        await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
+    except Exception as e:
+        logger.error(f"Error in /onlinetag command: {e}")
         await message.reply_text(f"टैग करते समय error हुई: {e}")
 
 
@@ -648,20 +704,25 @@ async def tag_admins(client: Client, message: Message) -> None:
 
     try:
         admins = [admin async for admin in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)]
-        tagged_admins = [admin.user.mention for admin in admins if not admin.user.is_bot]
+        tagged_admins = []
+        for admin in admins:
+            if not admin.user.is_bot:
+                full_name = f"{admin.user.first_name}{(' ' + admin.user.last_name) if admin.user.last_name else ''}"
+                tagged_admins.append(f"👑 <a href='tg://user?id={admin.user.id}'>{full_name}</a>")
 
         if not tagged_admins:
-            await message.reply_text("Is group mein koi admins nahi hain jinhe tag kiya ja sake.")
+            await message.reply_text("Is group mein koi admins nahi hain jinhe tag kiya ja sake.", parse_mode=enums.ParseMode.HTML)
             return
 
-        tag_message_text = " ".join(f"👑 {admin}" for admin in tagged_admins)
+        tag_message_text = " ".join(tagged_admins)
 
         if chat_id not in TAG_MESSAGES:
             TAG_MESSAGES[chat_id] = []
 
         sent_message = await message.reply_text(
-            f"{tag_message_text}\n\nMessage: {message_text}",
-            parse_mode=enums.ParseMode.HTML
+            f"{tag_message_text}\n\n<b>Message:</b> {message_text}",
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
         )
         TAG_MESSAGES[chat_id].append(sent_message.id)
 
@@ -789,7 +850,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
 
                 mode, limit, penalty = get_config_sync(chat_id)
                 full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-                mention = f"[{full_name}](tg://user?id={user.id})"
+                mention = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
                 if mode == "warn":
                     count = increment_warning_sync(chat_id, user.id)
@@ -998,7 +1059,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.restrict_chat_member(group_chat_id, target_id, ChatPermissions(can_send_messages=True))
             reset_warnings_sync(group_chat_id, target_id)
             user_obj = await client.get_chat_member(group_chat_id, target_id)
-            user_mention = user_obj.user.mention
+            user_mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Whitelist ✅", callback_data=f"whitelist_{target_id}_{group_chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
             try:
                 await query.message.edit_text(f"<b>✅ {user_mention} unmuted!</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -1020,7 +1081,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             reset_warnings_sync(group_chat_id, target_id)
             try:
                 user_obj = await client.get_chat_member(group_chat_id, target_id)
-                user_mention = user_obj.user.mention
+                user_mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
             except Exception:
                 user_mention = f"User (`{target_id}`)"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Whitelist ✅", callback_data=f"whitelist_{target_id}_{group_chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
@@ -1040,7 +1101,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         reset_warnings_sync(chat_id, target_id)
         user_obj = await client.get_chat_member(chat_id, target_id)
         full_name = f"{user_obj.user.first_name}{(' ' + user_obj.user.last_name) if user_obj.user.last_name else ''}"
-        mention = f"[{full_name}](tg://user?id={target_id})"
+        mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Whitelist✅", callback_data=f"whitelist_{target_id}_{chat_id}"),
              InlineKeyboardButton("🗑️ Close", callback_data="close")]
@@ -1078,7 +1139,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-            mention = f"[{full_name}](tg://user?id={target_id})"
+            mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
         except Exception:
             mention = f"User (`{target_id}`)"
         kb = InlineKeyboardMarkup([
@@ -1109,6 +1170,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
             f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
             "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
+            "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
             "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
             "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein."
         )
@@ -1184,7 +1246,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         try:
             target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            target_user_mention = target_user.user.mention
+            target_user_mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
         except Exception:
             target_user_mention = f"User (`{target_user_id}`)"
 
@@ -1237,7 +1299,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             )
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} को {duration_str} के लिए म्यूट कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
+                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                await query.edit_message_text(f"✅ {mention} को {duration_str} के लिए म्यूट कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
             except Exception:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को {duration_str} के लिए म्यूट कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
@@ -1257,7 +1320,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
+                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                await query.edit_message_text(f"✅ {mention} को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
             except Exception:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
@@ -1276,13 +1340,14 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
+                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                await query.edit_message_text(f"✅ {mention} को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
             except Exception:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Kick करते समय error हुई: {e}")
+                await query.message.edit_text(f"Kick کرتے समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
@@ -1299,15 +1364,15 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                user_mention = target_user.user.mention
+                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
             except Exception:
-                user_mention = f"User (`{target_user_id}`)"
+                mention = f"User (`{target_user_id}`)"
 
             warn_count = increment_warning_sync(group_chat_id, target_user_id)
 
             warn_message = (
                 f"🚨 <b>Chetavni</b> 🚨\n\n"
-                f"➡️ {user_mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
+                f"➡️ {mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
                 f"➡️ <b>Yeh aapki {warn_count}vi chetavni hai.</b>"
             )
 
@@ -1322,17 +1387,17 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 )
                 permanent_mute_message = (
                     f"❌ <b>Permanent Mute</b> ❌\n\n"
-                    f"➡️ {user_mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
+                    f"➡️ {mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
                 )
                 await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
                 try:
-                    await query.message.edit_text(f"✅ {user_mention} को {warn_count} चेतावनियाँ मिलने के बाद permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {mention} को {warn_count} चेतावनियाँ मिलने के बाद permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
                 try:
-                    await query.message.edit_text(f"✅ {user_mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
                 logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
@@ -1351,13 +1416,13 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         try:
             user_obj = await client.get_chat_member(group_chat_id, target_user_id)
-            user_mention = user_obj.user.mention
+            mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
         except Exception:
-            user_mention = f"User (`{target_user_id}`)"
+            mention = f"User (`{target_user_id}`)"
 
         notification_message = (
             f"🚨 <b>नियम उल्लंघन</b> 🚨\n\n"
-            f"<b>👤 यूज़र:</b> {user_mention}\n"
+            f"<b>👤 यूज़र:</b> {mention}\n"
             f"<b>📝 कारण:</b> (पिछला उल्लंघन)\n\n"
             f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
