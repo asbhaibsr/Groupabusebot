@@ -114,17 +114,24 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
         logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
         return False
 
+# Naya log channel function jo robust hai
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
-    """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    if LOG_CHANNEL_ID and LOG_CHANNEL_ID != 0:
-        try:
-            await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
-        except (BadRequest, Forbidden) as e:
-            logger.error(f"Cannot send to log channel: {e}. Channel may not exist or bot lacks permissions.")
-        except Exception as e:
-            logger.error(f"Error logging to channel: {e}")
-    else:
+    """Sends a log message to the predefined LOG_CHANNEL_ID with better error handling."""
+    if not LOG_CHANNEL_ID:
         logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
+        return
+    
+    try:
+        # Check if the bot can send messages to the log channel
+        await client.get_chat(LOG_CHANNEL_ID)
+        await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
+    except Forbidden:
+        logger.error(f"Bot does not have permissions to send messages to log channel {LOG_CHANNEL_ID}.")
+    except BadRequest as e:
+        logger.error(f"Cannot send to log channel: {e}. Channel may not exist or bot lacks permissions.")
+    except Exception as e:
+        logger.error(f"Error logging to channel: {e}")
+
 
 def get_config_sync(chat_id):
     if db is None: return DEFAULT_CONFIG
@@ -176,6 +183,7 @@ def reset_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
+# User profile button ko hatakar code ko badla gaya hai
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
     user_mention = user.mention
@@ -192,16 +200,11 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     notification_text = (
         f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
         f"It contained language that violates our community guidelines.\n\n"
-        f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
-        f"**Your Message:**\n"
-        f"<a href='tg://spoiler'>{original_message.text}</a>"
+        f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>"
     )
-
-    user_button_text = f"👤 {full_name}"
 
     keyboard = [
         [
-            InlineKeyboardButton(user_button_text, url=f"tg://user?id={user.id}"),
             InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat_id}")
         ],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
@@ -218,6 +221,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
         
+        # Log message ko behtar banaya gaya hai
         log_message = (
             f"🚨 <b>Incident Detected</b> 🚨\n\n"
             f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
@@ -239,29 +243,11 @@ async def start(client: Client, message: Message) -> None:
     bot_info = await client.get_me()
     bot_name = bot_info.first_name
 
+    # Private mein /start command ka naya code
     if chat.type == enums.ChatType.PRIVATE:
-        welcome_message = (
-            f"👋 <b>Namaste {user.first_name}!</b>\n\n"
-            f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
-            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun, "
-            f"gaaliyon wale messages ko delete karta hun aur zaroorat padne par warning bhi deta hun.\n\n"
-            f"<b>Mere features:</b>\n"
-            f"• Gaali detection aur deletion\n"
-            f"• Bio-link protection\n"
-            f"• User warnings aur actions (Mute, Ban, Kick)\n"
-            f"• Whitelist management\n"
-            f"• Incident logging\n\n"
-            f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
-        )
-        keyboard = [
-            [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
-            [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
-            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        welcome_message = f"👋 Hello <a href='tg://user?id={user.id}'>{user.first_name}</a>"
         await message.reply_text(
             text=welcome_message,
-            reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
@@ -398,7 +384,11 @@ async def command_free(client: Client, message: Message):
     add_whitelist_sync(chat_id, target.id)
     reset_warnings_sync(chat_id, target.id)
 
-    text = f"<b>✅ {target.mention} has been added to the whitelist</b>"
+    # Whitelist par mention ka code
+    full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
+    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
+    text = f"<b>✅ {mention} has been added to the whitelist</b>"
+    
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🚫 Unwhitelist", callback_data=f"unwhitelist_{target.id}"),
@@ -428,11 +418,15 @@ async def command_unfree(client: Client, message: Message):
     if not target:
         return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
 
+    # Unwhitelist par mention ka code
+    full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
+    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
+
     if is_whitelisted_sync(chat_id, target.id):
         remove_whitelist_sync(chat_id, target.id)
-        text = f"<b>🚫 {target.mention} has been removed from the whitelist</b>"
+        text = f"<b>🚫 {mention} has been removed from the whitelist</b>"
     else:
-        text = f"<b>ℹ️ {target.mention} is not whitelisted.</b>"
+        text = f"<b>ℹ️ {mention} is not whitelisted.</b>"
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -622,7 +616,8 @@ async def tag_all(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
+    # Message jo tag ke saath jayega
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
     
     try:
         members_to_tag = []
@@ -635,7 +630,7 @@ async def tag_all(client: Client, message: Message) -> None:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
             return
 
-        chunk_size = 10  # Updated to 10 users per message
+        chunk_size = 10
         tag_messages_to_delete = []
 
         async def tag_task():
@@ -648,7 +643,8 @@ async def tag_all(client: Client, message: Message) -> None:
                     chunk = members_to_tag[i:i + chunk_size]
                     final_message = " ".join(chunk)
                     
-                    final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+                    if message_text:
+                        final_message += f"\n\n{message_text}"
 
                     sent_message = await message.reply_text(
                         final_message,
@@ -675,7 +671,6 @@ async def tag_all(client: Client, message: Message) -> None:
                     reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
-                await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
 
             except asyncio.CancelledError:
                 logger.info(f"Tagging task for chat {chat_id} was cancelled.")
@@ -717,7 +712,7 @@ async def online_tag(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Online members, attention please!"
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
 
     try:
         online_members_to_tag = []
@@ -730,7 +725,7 @@ async def online_tag(client: Client, message: Message) -> None:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
             return
 
-        chunk_size = 10  # Updated to 10 users per message
+        chunk_size = 10
         tag_messages_to_delete = []
 
         async def online_tag_task():
@@ -743,7 +738,8 @@ async def online_tag(client: Client, message: Message) -> None:
                     chunk = online_members_to_tag[i:i + chunk_size]
                     final_message = " ".join(chunk)
                     
-                    final_message += f"\n\n<b>मैसेज:</b> {message_text}"
+                    if message_text:
+                        final_message += f"\n\n{message_text}"
 
                     sent_message = await message.reply_text(
                         final_message,
@@ -770,7 +766,6 @@ async def online_tag(client: Client, message: Message) -> None:
                     reply_markup=reply_markup,
                     parse_mode=enums.ParseMode.HTML
                 )
-                await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
             
             except asyncio.CancelledError:
                 logger.info(f"Online tagging task for chat {chat_id} was cancelled.")
@@ -860,7 +855,7 @@ async def tag_stop(client: Client, message: Message) -> None:
         return
 
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
-        await message.reply_text("कोई भी टैगिंग मैसेज नहीं मिला जिसे रोका जा सके।")
+        await message.reply_text("कोई भी टैगिंग मैसेज नहीं मिला जिसे रोका ja sake।")
         return
 
     try:
@@ -884,7 +879,6 @@ async def tag_stop(client: Client, message: Message) -> None:
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML
         )
-        await message.reply_text("अगर आपको कोई मदद चाहिए तो @asbhai_bsr को join करें")
         logger.info(f"Admin {message.from_user.id} cleaned up old tagging messages in chat {chat_id}.")
 
     except Exception as e:
@@ -968,7 +962,6 @@ async def check_and_delete_biolink(client: Client, message: Message):
                 mode, limit, penalty = get_config_sync(chat_id)
                 full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
                 mention = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
-                user_button_text = f"👤 {full_name}"
 
                 if mode == "warn":
                     count = increment_warning_sync(chat_id, user.id)
@@ -1504,13 +1497,13 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 )
                 await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
                 try:
-                    await query.message.edit_text(f"✅ {mention} को {warn_count} चेतावनियाँ मिलने के बाद permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {mention} ko {warn_count} chetavniyan milne ke baad permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
                 try:
-                    await query.message.edit_text(f"✅ {mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {mention} ko chetavni bhej di gai hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
             logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
@@ -1542,7 +1535,6 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         keyboard = [
             [
-                InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={target_user_id}"),
                 InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
             ],
             [
@@ -1621,4 +1613,4 @@ if __name__ == "__main__":
     # The client.run() method handles starting the bot and running event loops
     logger.info("Bot is starting...")
     client.run()
-    logger.info("Bot stopped.")
+    logger.info("Bot stopped
