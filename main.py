@@ -12,28 +12,31 @@ from pyrogram.types import (
     ChatPermissions, BotCommand
 )
 from pyrogram.errors import BadRequest, Forbidden
-
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (for local development)
+load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
+# NOTE: Make sure you have a `profanity_filter.py` file in the same directory.
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 # NOTE: Set a default value to prevent errors if the variable is not set.
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534)) 
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) 
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", "0"))
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-# NOTE: Replace this with your actual admin IDs.
-ADMIN_USER_IDS = [7315805581]
+ADMIN_USER_IDS = [7315805581] # NOTE: Replace with your actual admin IDs.
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'https?://(?:www\.|m\.)?(?:t\.me/|telegra\.ph|github|bit\.ly|tinyurl|discord)\S*')
-TAG_EMOJIS = ["🎉", "✨", "💫", "🌟", "🎈", "🎊", "🔥", "💖", "⚡️", "🌈"]
+URL_PATTERN = re.compile(r'https?://(?:www\.|m\.)?(?:t\.me/|telegra\.ph|github|bit\.ly|tinyurl|discord|t\.co)\S*')
 TAG_MESSAGES = {}
 
 # --- Logging Setup ---
@@ -61,7 +64,7 @@ profanity_filter = None
 def init_mongodb():
     global mongo_client, db, profanity_filter
     if MONGO_DB_URI is None:
-        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
+        logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         return
 
@@ -69,40 +72,21 @@ def init_mongodb():
         mongo_client = MongoClient(MONGO_DB_URI)
         db = mongo_client.get_database("asfilter")
 
-        collection_names = db.list_collection_names()
-        
-        if "groups" not in collection_names:
-            db.create_collection("groups")
         db.groups.create_index("chat_id", unique=True)
-
-        if "users" not in collection_names:
-            db.create_collection("users")
         db.users.create_index("user_id", unique=True)
-        
-        if "incidents" not in collection_names:
-            db.create_collection("incidents")
         db.incidents.create_index("case_id", unique=True)
-        
-        if "warnings" not in collection_names:
-            db.create_collection("warnings")
         db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
-        
-        if "config" not in collection_names:
-            db.create_collection("config")
         db.config.create_index("chat_id", unique=True)
-        
-        if "whitelist" not in collection_names:
-            db.create_collection("whitelist")
         db.whitelist.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
+        logger.error(f"Failed to connect to MongoDB or initialize collections: {e}.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
 
-# --- Helper Functions (Merged and Refined) ---
+# --- Helper Functions ---
 def is_admin(user_id: int) -> bool:
     """Checks if the given user_id is a bot admin."""
     return user_id in ADMIN_USER_IDS
@@ -120,7 +104,7 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    if LOG_CHANNEL_ID > 0:
+    if LOG_CHANNEL_ID and LOG_CHANNEL_ID != 0:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except (BadRequest, Forbidden) as e:
@@ -128,7 +112,7 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
         except Exception as e:
             logger.error(f"Error logging to channel: {e}")
     else:
-        logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
+        logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
 
 # --- Helper functions for warnings and biolink exceptions ---
 async def get_config(chat_id):
@@ -182,7 +166,6 @@ async def reset_warnings(chat_id, user_id):
 
 # --- Common Incident Handler Function ---
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
-    """Common function to handle all incidents (abuse, bio link, edited message)."""
     original_message_id = original_message.id
     message_text = original_message.text or "No text content"
     if not case_id:
@@ -195,10 +178,9 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
     sent_details_msg = None
-    forwarded_message_id = None
-    case_detail_url = "https://t.me/"
-
-    if CASE_CHANNEL_ID > 0 and CASE_CHANNEL_USERNAME:
+    case_detail_url = "" # Set to empty string initially
+    
+    if CASE_CHANNEL_ID and CASE_CHANNEL_USERNAME:
         try:
             details_message_text = (
                 f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
@@ -213,20 +195,21 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             sent_details_msg = await client.send_message(
                 chat_id=CASE_CHANNEL_ID,
                 text=details_message_text,
-                parse_mode=enums.ParseMode.HTML
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
             )
-            forwarded_message_id = sent_details_msg.id
 
-            if CASE_CHANNEL_USERNAME:
-                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
-            else:
-                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
-            
-            logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
+            if sent_details_msg:
+                if CASE_CHANNEL_USERNAME:
+                    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
+                else:
+                    channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                    case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
+                
+                logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
 
         except Exception as e:
-            logger.error(f"Error sending incident details to case channel: {e}")
+            logger.error(f"Error sending incident details to case channel: {e}. Check bot permissions or channel ID.")
 
     if db is not None and db.incidents is not None:
         try:
@@ -241,7 +224,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 "abusive_content": message_text,
                 "timestamp": datetime.now(),
                 "status": "pending_review",
-                "case_channel_message_id": forwarded_message_id,
+                "case_channel_message_id": sent_details_msg.id if sent_details_msg else None,
                 "reason": reason
             })
             logger.info(f"Incident {case_id} logged in DB.")
@@ -264,7 +247,8 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         ]
     ]
 
-    if CASE_CHANNEL_USERNAME or CASE_CHANNEL_ID > 0:
+    # Only add the "View Case Details" button if a valid URL was created
+    if case_detail_url:
         keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -279,17 +263,8 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
     except Exception as e:
         logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
-        try:
-            await client.send_message(
-                chat_id=chat_id,
-                text=f"User {user.id} ka message hata diya gaya hai. Karan: {reason}",
-                parse_mode=enums.ParseMode.HTML
-            )
-        except Exception as simple_e:
-            logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
-            
 
-# --- Bot Commands Handlers (Merged) ---
+# --- Bot Commands Handlers ---
 @client.on_message(filters.command("start"))
 async def start(client: Client, message: Message) -> None:
     user = message.from_user
@@ -298,6 +273,7 @@ async def start(client: Client, message: Message) -> None:
     bot_name = bot_info.first_name
 
     if chat.type == enums.ChatType.PRIVATE:
+        # ... (same as your original code) ...
         welcome_message = (
             f"👋 <b>Namaste {user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -436,7 +412,7 @@ async def configure(client: Client, message: Message):
 async def command_free(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
-    if not await is_group_admin(client, chat_id, user_id):
+    if not await is_group_admin(chat_id, user_id):
         return await message.reply_text("Aap group admin nahi hain.")
 
     if message.reply_to_message:
@@ -463,7 +439,7 @@ async def command_free(client: Client, message: Message):
 async def command_unfree(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
-    if not await is_group_admin(client, chat_id, user_id):
+    if not await is_group_admin(chat_id, user_id):
         return await message.reply_text("Aap group admin nahi hain.")
 
     if message.reply_to_message:
@@ -492,7 +468,7 @@ async def command_unfree(client: Client, message: Message):
 async def command_freelist(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
-    if not await is_group_admin(client, chat_id, user_id):
+    if not await is_group_admin(chat_id, user_id):
         return await message.reply_text("Aap group admin nahi hain.")
 
     ids = await get_whitelist(chat_id)
@@ -782,8 +758,8 @@ async def check_permissions(client: Client, message: Message):
         await message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
 
 
-# --- Core Message Handler (Profanity, URL in message, URL in Bio) ---
-@client.on_message(filters.group)
+# --- Core Message Handler (Profanity, URL in message) ---
+@client.on_message(filters.group & filters.text & ~filters.via_bot)
 async def handle_all_messages(client: Client, message: Message) -> None:
     user = message.from_user
     chat = message.chat
@@ -791,7 +767,6 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
     if not user: return
     if await is_group_admin(chat.id, user.id) or await is_whitelisted(chat.id, user.id): return
-    if message.via_bot: return
 
     # 1. Check for Profanity
     if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
@@ -803,63 +778,69 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
         return
 
-    # 3. Check for URL in Bio (from the first bot's logic)
+    # 3. Check for URL in Bio
     user_chat = await client.get_chat(user.id)
     bio = user_chat.bio or ""
-    full_name = f"{user_chat.first_name}{(' ' + user_chat.last_name) if user_chat.last_name else ''}"
-    mention = f"[{full_name}](tg://user?id={user.id})"
     
     if URL_PATTERN.search(bio):
-        try:
-            await message.delete()
-        except errors.MessageDeleteForbidden:
-            return await message.reply_text("Please grant me delete permission.")
+        await handle_bio_link(client, message, user, chat)
+    else:
+        await reset_warnings(chat.id, user.id)
 
-        mode, limit, penalty = await get_config(chat.id)
+async def handle_bio_link(client: Client, message: Message, user, chat):
+    # This function handles the bio link logic separately for clarity
+    
+    try:
+        await message.delete()
+    except errors.MessageDeleteForbidden:
+        return await message.reply_text("Please grant me delete permission.")
+
+    mode, limit, penalty = await get_config(chat.id)
+    
+    full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
+    mention = f"[{full_name}](tg://user?id={user.id})"
+    
+    if mode == "warn":
+        count = await increment_warning(chat.id, user.id)
+        warning_text = (
+            "**🚨 Warning Issued** 🚨\n\n"
+            f"👤 **User:** {mention} `[{user.id}]`\n"
+            "❌ **Reason:** URL found in bio\n"
+            f"⚠️ **Warning:** {count}/{limit}\n\n"
+            "**Notice: Please remove any links from your bio.**"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel Warning", callback_data=f"cancel_warn_{user.id}"),
+             InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
+            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        sent = await message.reply_text(warning_text, reply_markup=keyboard)
         
-        if mode == "warn":
-            count = await increment_warning(chat.id, user.id)
-            warning_text = (
-                "**🚨 Warning Issued** 🚨\n\n"
-                f"👤 **User:** {mention} `[{user.id}]`\n"
-                "❌ **Reason:** URL found in bio\n"
-                f"⚠️ **Warning:** {count}/{limit}\n\n"
-                "**Notice: Please remove any links from your bio.**"
-            )
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel Warning", callback_data=f"cancel_warn_{user.id}"),
-                 InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
-                [InlineKeyboardButton("🗑️ Close", callback_data="close")]
-            ])
-            sent = await message.reply_text(warning_text, reply_markup=keyboard)
-            
-            if count >= limit:
-                try:
-                    if penalty == "mute":
-                        await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
-                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}")]])
-                        await sent.edit_text(f"**{full_name} has been 🔇 muted for [Link In Bio].**", reply_markup=kb)
-                    else: # ban
-                        await client.ban_chat_member(chat.id, user.id)
-                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}")]])
-                        await sent.edit_text(f"**{full_name} has been 🔨 banned for [Link In Bio].**", reply_markup=kb)
-                
-                except errors.ChatAdminRequired:
-                    await sent.edit_text(f"**I don't have permission to {penalty} users.**")
-        else: # direct mute or ban
+        if count >= limit:
             try:
                 if penalty == "mute":
                     await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}")]])
-                    await message.reply_text(f"{full_name} has been 🔇 muted for [Link In Bio].", reply_markup=kb)
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                    await sent.edit_text(f"**{full_name} has been 🔇 muted for [Link In Bio].**", reply_markup=kb)
                 else: # ban
                     await client.ban_chat_member(chat.id, user.id)
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}")]])
-                    await message.reply_text(f"{full_name} has been 🔨 banned for [Link In Bio].", reply_markup=kb)
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+                    await sent.edit_text(f"**{full_name} has been 🔨 banned for [Link In Bio].**", reply_markup=kb)
+            
             except errors.ChatAdminRequired:
-                return await message.reply_text(f"I don't have permission to {penalty} users.")
-    else:
-        await reset_warnings(chat.id, user.id)
+                await sent.edit_text(f"**I don't have permission to {penalty} users.**")
+    else: # direct mute or ban
+        try:
+            if penalty == "mute":
+                await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}")]])
+                await message.reply_text(f"{full_name} has been 🔇 muted for [Link In Bio].", reply_markup=kb)
+            else: # ban
+                await client.ban_chat_member(chat.id, user.id)
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}")]])
+                await message.reply_text(f"{full_name} has been 🔨 banned for [Link In Bio].", reply_markup=kb)
+        except errors.ChatAdminRequired:
+            return await message.reply_text(f"I don't have permission to {penalty} users.")
 
 
 # --- Handler for Edited Messages ---
@@ -885,7 +866,7 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज", edited_message, "edited_message")
 
 
-# --- Callback Query Handlers (Merged) ---
+# --- Callback Query Handlers ---
 @client.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery) -> None:
     data = query.data
@@ -1254,13 +1235,13 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         # Check if case_channel_message_id exists to build URL
         case_channel_message_id = incident_data.get("case_channel_message_id") if incident_data else None
         
-        if case_channel_message_id and CASE_CHANNEL_USERNAME:
-            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
-        elif case_channel_message_id and CASE_CHANNEL_ID:
-            channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-            case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
-        else:
-            case_detail_url = "https://t.me/telegram"
+        case_detail_url = ""
+        if case_channel_message_id:
+            if CASE_CHANNEL_USERNAME:
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
+            elif CASE_CHANNEL_ID:
+                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
 
         try:
             user_obj = await client.get_chat_member(group_chat_id, target_user_id)
@@ -1279,18 +1260,33 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             [
                 InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={target_user_id}"),
                 InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
-            ],
-            [
-                InlineKeyboardButton("📄 View Case Details", url=case_detail_url)
             ]
         ]
+        if case_detail_url:
+             keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
+             
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
     elif data == "confirm_broadcast":
-        await confirm_broadcast(client, query)
+        # Placeholder for confirm_broadcast function
+        await query.message.edit_text("Broadcast feature under development. Message will not be sent.")
+        # if BROADCAST_MESSAGE.get(user_id):
+        #     message_to_send = BROADCAST_MESSAGE[user_id]
+        #     groups = db.groups.find({})
+        #     for group in groups:
+        #         try:
+        #             await client.copy_message(chat_id=group['chat_id'], from_chat_id=message_to_send.chat.id, message_id=message_to_send.id)
+        #         except Exception as e:
+        #             logger.error(f"Failed to broadcast to group {group['chat_id']}: {e}")
+        #     await query.message.edit_text("Broadcast sent to all groups.")
+        #     BROADCAST_MESSAGE.pop(user_id)
+
     elif data == "cancel_broadcast":
-        await cancel_broadcast(client, query)
+        # Placeholder for cancel_broadcast function
+        await query.message.edit_text("Broadcast cancelled.")
+        # if BROADCAST_MESSAGE.get(user_id):
+        #     BROADCAST_MESSAGE.pop(user_id)
 
 
 # --- Flask App for Health Check ---
@@ -1317,4 +1313,3 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped.")
-
