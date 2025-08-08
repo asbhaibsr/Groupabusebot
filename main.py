@@ -177,7 +177,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     sent_details_msg = None
     forwarded_message_id = None
-    case_detail_url = "https://t.me/"
+    case_detail_url = ""
 
     if CASE_CHANNEL_ID > 0:
         try:
@@ -198,13 +198,12 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             )
             forwarded_message_id = sent_details_msg.id
 
-            if sent_details_msg:
-                if CASE_CHANNEL_ID < 0:
-                    channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                    case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
-                else:
-                    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
-                logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
+            if CASE_CHANNEL_ID < 0 and sent_details_msg:
+                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
+            elif sent_details_msg and CASE_CHANNEL_USERNAME:
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
+            logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
 
         except Exception as e:
             logger.error(f"Error sending incident details to case channel: {e}")
@@ -244,7 +243,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         ]
     ]
     
-    if case_detail_url and case_detail_url != "https://t.me/":
+    if case_detail_url:
         keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -749,7 +748,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     # Check for bio link if the user is not an admin and not whitelisted
     if not is_sender_admin and not await is_biolink_whitelisted(user.id):
         try:
-            user_profile = await client.get_users(user.id)  # Changed from get_chat to get_users
+            user_profile = await client.get_users(user.id)
             user_bio = user_profile.bio or ""
             if URL_PATTERN.search(user_bio):
                 await handle_incident(client, chat.id, user, "Bio में लिंक", message, "bio_link")
@@ -758,6 +757,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
             logger.warning(f"Could not get user info for user {user.id}: {e}")
         except Exception as e:
             logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+
 
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
@@ -1072,16 +1072,15 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         reason = incident_data["reason"] if incident_data else "Ulanghan"
         case_channel_message_id = incident_data.get("case_channel_message_id") if incident_data else None
         
-        if case_channel_message_id and CASE_CHANNEL_ID:
-            if CASE_CHANNEL_ID < 0:
-                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
-            else:
-                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
+        case_detail_url = ""
+        if case_channel_message_id and CASE_CHANNEL_ID < 0:
+            channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+            case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
+        elif case_channel_message_id and CASE_CHANNEL_USERNAME:
+            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
         elif CASE_CHANNEL_USERNAME:
              case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
-        else:
-            case_detail_url = "https://t.me/telegram"
+        
 
         user_obj = await client.get_chat_member(group_chat_id, target_user_id)
 
@@ -1099,7 +1098,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             ]
         ]
         
-        if case_detail_url and case_detail_url != "https://t.me/":
+        if case_detail_url:
             keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
