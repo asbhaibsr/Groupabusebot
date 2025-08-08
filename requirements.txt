@@ -1,5 +1,5 @@
 Flask
-pyrogram==2.0.108
+pyrogram==2.0.106
 motor
 ProfanityFilter
 pymongo
