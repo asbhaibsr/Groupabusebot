@@ -22,8 +22,12 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534)) 
-CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
+
+# Bot will now read these IDs directly from the code
+# Make sure these are your correct channel IDs
+LOG_CHANNEL_ID = -1002352329534
+CASE_CHANNEL_ID = -1002717243409
+
 CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]
@@ -114,7 +118,8 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    if LOG_CHANNEL_ID > 0:
+    # This condition is fixed to work with negative channel IDs
+    if LOG_CHANNEL_ID and LOG_CHANNEL_ID != 0:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
         except (BadRequest, Forbidden) as e:
@@ -179,7 +184,8 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     forwarded_message_id = None
     case_detail_url = ""
 
-    if CASE_CHANNEL_ID > 0:
+    # This condition is fixed to work with negative channel IDs
+    if CASE_CHANNEL_ID and CASE_CHANNEL_ID != 0:
         try:
             details_message_text = (
                 f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
