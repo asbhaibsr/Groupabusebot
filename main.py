@@ -5,6 +5,7 @@ import threading
 import asyncio
 import logging
 import re
+import random # Add this import
 from pymongo import MongoClient, ReturnDocument
 from pyrogram import Client, filters, enums, errors
 from pyrogram.types import (
@@ -37,7 +38,10 @@ BROADCAST_MESSAGE = {}
 URL_PATTERN = re.compile(r'(https?://|www\.)[a-zA-Z0-9.\-]+(\.[a-zA-Z]{2,})+(/[a-zA-Z0-9._%+-]*)*', re.IGNORECASE)
 USERNAME_PATTERN = re.compile(r'@\w+', re.IGNORECASE)
 
+# --- Tagging variables
 TAG_MESSAGES = {}
+ONGOING_TAGGING_TASKS = {}
+EMOJIS = ['👤', '👥', '📢', '📌', '🔔', '📣', '📯', '🔊']
 
 # --- New Constants from your first snippet ---
 DEFAULT_WARNING_LIMIT = 3
@@ -186,13 +190,11 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     notification_text = (
         f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
         f"It contained language that violates our community guidelines.\n\n"
-        f"To see what you did, click the **View case details** button below\n\n"
         f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
-        f"<b>Your Message:</b>\n"
+        f"**Your Message:**\n"
         f"<a href='tg://spoiler'>{original_message.text}</a>"
     )
 
-    # Use user mention in the button text
     user_button_text = f"👤 {full_name}"
 
     keyboard = [
@@ -601,7 +603,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
                 if URL_PATTERN.search(bio):
-                    # Call the function for new members
                     await handle_incident(client, chat.id, member, "बायो में लिंक (Bio-Link)", message, "bio_link")
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
@@ -615,42 +616,64 @@ async def tag_all(client: Client, message: Message) -> None:
         return
 
     chat_id = message.chat.id
+    if chat_id in ONGOING_TAGGING_TASKS:
+        await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
+        return
+
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
     
     try:
         members_to_tag = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
-                members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>👤</a>")
+                emoji = random.choice(EMOJIS)
+                members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
 
         if not members_to_tag:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
             return
 
         chunk_size = 10
-        for i in range(0, len(members_to_tag), chunk_size):
-            chunk = members_to_tag[i:i + chunk_size]
-            final_message = " ".join(chunk)
-            
-            if i == 0:
+        tag_messages_to_delete = []
+
+        async def tag_task():
+            for i in range(0, len(members_to_tag), chunk_size):
+                if chat_id not in ONGOING_TAGGING_TASKS:
+                    break
+                
+                chunk = members_to_tag[i:i + chunk_size]
+                final_message = " ".join(chunk)
+                
                 final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
-            sent_message = await message.reply_text(
-                final_message,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+                sent_message = await message.reply_text(
+                    final_message,
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+                tag_messages_to_delete.append(sent_message.id)
+                await asyncio.sleep(1)
 
-            if chat_id not in TAG_MESSAGES:
-                TAG_MESSAGES[chat_id] = []
-            TAG_MESSAGES[chat_id].append(sent_message.id)
-            await asyncio.sleep(1) # 1-second delay between messages
+            if chat_id in ONGOING_TAGGING_TASKS:
+                ONGOING_TAGGING_TASKS.pop(chat_id)
+                await message.reply_text("टैगिंग पूरा हुआ!")
+        
+        task = asyncio.create_task(tag_task())
+        ONGOING_TAGGING_TASKS[chat_id] = task
+
+        if chat_id not in TAG_MESSAGES:
+            TAG_MESSAGES[chat_id] = []
+        TAG_MESSAGES[chat_id] = tag_messages_to_delete
 
     except errors.MessageTooLong:
         await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
+        if chat_id in ONGOING_TAGGING_TASKS:
+            ONGOING_TAGGING_TASKS.pop(chat_id)
     except Exception as e:
         logger.error(f"Error in /tagall command: {e}")
         await message.reply_text(f"टैग करते समय error हुई: {e}")
+        if chat_id in ONGOING_TAGGING_TASKS:
+            ONGOING_TAGGING_TASKS.pop(chat_id)
 
 @client.on_message(filters.command("onlinetag") & filters.group)
 async def online_tag(client: Client, message: Message) -> None:
@@ -660,42 +683,64 @@ async def online_tag(client: Client, message: Message) -> None:
         return
 
     chat_id = message.chat.id
+    if chat_id in ONGOING_TAGGING_TASKS:
+        await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
+        return
+
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Online members, attention please!"
 
     try:
         online_members_to_tag = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot and member.user.status in [enums.UserStatus.ONLINE, enums.UserStatus.RECENTLY]:
-                online_members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>🟢</a>")
+                emoji = random.choice(EMOJIS)
+                online_members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
 
         if not online_members_to_tag:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
             return
 
         chunk_size = 10
-        for i in range(0, len(online_members_to_tag), chunk_size):
-            chunk = online_members_to_tag[i:i + chunk_size]
-            final_message = " ".join(chunk)
-            
-            if i == 0:
+        tag_messages_to_delete = []
+
+        async def online_tag_task():
+            for i in range(0, len(online_members_to_tag), chunk_size):
+                if chat_id not in ONGOING_TAGGING_TASKS:
+                    break
+
+                chunk = online_members_to_tag[i:i + chunk_size]
+                final_message = " ".join(chunk)
+                
                 final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
-            sent_message = await message.reply_text(
-                final_message,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-            
-            if chat_id not in TAG_MESSAGES:
-                TAG_MESSAGES[chat_id] = []
-            TAG_MESSAGES[chat_id].append(sent_message.id)
-            await asyncio.sleep(1) # 1-second delay between messages
+                sent_message = await message.reply_text(
+                    final_message,
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+                tag_messages_to_delete.append(sent_message.id)
+                await asyncio.sleep(1)
+
+            if chat_id in ONGOING_TAGGING_TASKS:
+                ONGOING_TAGGING_TASKS.pop(chat_id)
+                await message.reply_text("टैगिंग पूरा हुआ!")
+        
+        task = asyncio.create_task(online_tag_task())
+        ONGOING_TAGGING_TASKS[chat_id] = task
+
+        if chat_id not in TAG_MESSAGES:
+            TAG_MESSAGES[chat_id] = []
+        TAG_MESSAGES[chat_id] = tag_messages_to_delete
 
     except errors.MessageTooLong:
         await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
+        if chat_id in ONGOING_TAGGING_TASKS:
+            ONGOING_TAGGING_TASKS.pop(chat_id)
     except Exception as e:
         logger.error(f"Error in /onlinetag command: {e}")
         await message.reply_text(f"टैग करते समय error हुई: {e}")
+        if chat_id in ONGOING_TAGGING_TASKS:
+            ONGOING_TAGGING_TASKS.pop(chat_id)
 
 
 @client.on_message(filters.command("admin") & filters.group)
@@ -745,6 +790,18 @@ async def tag_stop(client: Client, message: Message) -> None:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
+    # Check and stop ongoing tagging process first
+    if chat_id in ONGOING_TAGGING_TASKS:
+        try:
+            task = ONGOING_TAGGING_TASKS.pop(chat_id)
+            task.cancel()
+            await message.reply_text("टैगिंग प्रक्रिया बंद कर दी गई है।")
+            logger.info(f"Admin {message.from_user.id} stopped ongoing tagging in chat {chat_id}.")
+        except Exception as e:
+            logger.error(f"Error canceling tagging task: {e}")
+            await message.reply_text(f"टैगिंग प्रक्रिया बंद करते समय error हुई: {e}")
+        return
+
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
         await message.reply_text("कोई भी टैगिंग मैसेज नहीं मिला जिसे रोका जा सके।")
         return
@@ -757,7 +814,7 @@ async def tag_stop(client: Client, message: Message) -> None:
         bot_username = bot_info.username
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
-        final_message_text = "यह टैगिंग खत्म हो गया है।"
+        final_message_text = "पिछली टैगिंग के सारे मैसेज डिलीट कर दिए गए हैं।"
 
         keyboard = [
             [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
@@ -770,7 +827,7 @@ async def tag_stop(client: Client, message: Message) -> None:
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML
         )
-        logger.info(f"Admin {message.from_user.id} stopped tagging in chat {chat_id}.")
+        logger.info(f"Admin {message.from_user.id} cleaned up old tagging messages in chat {chat_id}.")
 
     except Exception as e:
         logger.error(f"Error in /tagstop command: {e}")
@@ -816,22 +873,18 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if await is_group_admin(chat.id, user.id) or is_whitelisted_sync(chat.id, user.id):
         return
 
-    # Call the biolink check function first
     if await check_and_delete_biolink(client, message):
         return
 
-    # 1. Check for Profanity
     if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
         return
 
-    # 2. Check for URLs directly in the message or @usernames
     if URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
         return
 
 
-# --- UPDATED BioLink Check Function (from your code snippet) ---
 async def check_and_delete_biolink(client: Client, message: Message):
     user = message.from_user
     user_id = user.id
@@ -962,22 +1015,18 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     if is_sender_admin or is_whitelisted_sync(chat.id, user.id):
         return
 
-    # Check for profanity in edited message
     if profanity_filter is not None and profanity_filter.contains_profanity(edited_message.text):
         await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में गाली-गलौज 😡", edited_message, "edited_message_abuse")
         return
 
-    # Check for links or usernames in edited message
     if URL_PATTERN.search(edited_message.text) or USERNAME_PATTERN.search(edited_message.text):
         await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक या यूज़रनेम 🔗", edited_message, "edited_message_link")
         return
+    
+    # If no violation, still delete the message and send a general notice.
+    await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज डिलीट हुआ", edited_message, "edited_message_deleted")
+    
 
-    # If no violation, just delete edited message from non-admin
-    try:
-        await client.delete_messages(chat_id=chat.id, message_ids=edited_message.id)
-        logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
-    except Exception as e:
-        logger.error(f"Error deleting edited message in {chat.id}: {e}")
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -1126,7 +1175,6 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-            # Corrected HTML link formatting for view profile
             mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
         except Exception:
             mention = f"User (`{target_id}`)"
@@ -1406,8 +1454,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 try:
                     await query.message.edit_text(f"✅ {mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
-                    pass
-                logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
+                pass
+            logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
 
         except Exception as e:
             try:
