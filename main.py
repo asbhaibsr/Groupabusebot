@@ -22,18 +22,15 @@ from profanity_filter import ProfanityFilter
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# NOTE: Set a default value to prevent errors if the variable is not set.
-# You MUST change these IDs to your actual channel IDs.
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534)) 
 CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
 CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-# NOTE: Replace this with your actual admin IDs.
 ADMIN_USER_IDS = [7315805581]
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'https?://(?:www\.|m\.)?(?:t\.me/|telegra\.ph|github|bit\.ly|tinyurl|discord|linktr|instabio|allmylinks|)\S*')
+URL_PATTERN = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
 TAG_EMOJIS = ["🎉", "✨", "💫", "🌟", "🎈", "🎊", "🔥", "💖", "⚡️", "🌈"]
 TAG_MESSAGES = {}
 
@@ -127,7 +124,6 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     else:
         logger.warning("LOG_CHANNEL_ID is not set, cannot log to channel.")
 
-# --- Helper functions for warnings and biolink exceptions ---
 async def get_warnings(user_id: int, chat_id: int):
     if db is None or db.warnings is None:
         return 0
@@ -183,7 +179,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     forwarded_message_id = None
     case_detail_url = "https://t.me/"
 
-    if CASE_CHANNEL_ID > 0 and CASE_CHANNEL_USERNAME:
+    if CASE_CHANNEL_ID > 0:
         try:
             details_message_text = (
                 f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
@@ -202,16 +198,17 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             )
             forwarded_message_id = sent_details_msg.id
 
-            if CASE_CHANNEL_USERNAME:
-                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
-            else:
-                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-                case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
-            
-            logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
+            if sent_details_msg:
+                if CASE_CHANNEL_ID < 0:
+                    channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                    case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
+                else:
+                    case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
+                logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
 
         except Exception as e:
             logger.error(f"Error sending incident details to case channel: {e}")
+            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" if CASE_CHANNEL_USERNAME else "https://t.me/telegram"
 
     if db is not None and db.incidents is not None:
         try:
@@ -235,11 +232,9 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     notification_message = (
         f"🚨 <b>Group mein Niyam Ulanghan!</b>\n\n"
-        f"<b>User:</b> {user.mention} (@{user.username if user.username else 'N/A'})\n"
-        f"<b>User ID:</b> <code>{user.id}</code>\n"
-        f"<b>Reason:</b> \"{reason}\"\n\n"
-        f"<b>Case ID:</b> <code>{case_id}</code>\n"
-        f"<b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        f"➡️ <b>User:</b> {user.mention}\n"
+        f"➡️ <b>Reason:</b> \"{reason} ki wajah se message hata diya gaya hai।\"\n\n"
+        f"➡️ <b>Case ID:</b> <code>{case_id}</code>"
     )
 
     keyboard = [
@@ -248,8 +243,8 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat_id}")
         ]
     ]
-
-    if CASE_CHANNEL_USERNAME or CASE_CHANNEL_ID > 0:
+    
+    if case_detail_url and case_detail_url != "https://t.me/":
         keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -751,6 +746,19 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message)", message, "link_in_message")
         return
 
+    # Check for bio link if the user is not an admin and not whitelisted
+    if not is_sender_admin and not await is_biolink_whitelisted(user.id):
+        try:
+            user_profile = await client.get_users(user.id)  # Changed from get_chat to get_users
+            user_bio = user_profile.bio or ""
+            if URL_PATTERN.search(user_bio):
+                await handle_incident(client, chat.id, user, "Bio में लिंक", message, "bio_link")
+                return
+        except BadRequest as e:
+            logger.warning(f"Could not get user info for user {user.id}: {e}")
+        except Exception as e:
+            logger.error(f"Error checking user bio for user {user.id} in chat {chat.id}: {e}")
+
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
@@ -765,16 +773,7 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
-        if profanity_filter is not None and profanity_filter.contains_profanity(edited_message.text):
-            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में गाली-गलौज", edited_message, "edited_message_abuse")
-            return
-        
-        if URL_PATTERN.search(edited_message.text):
-            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक", edited_message, "edited_message_link")
-            return
-            
         await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज", edited_message, "edited_message")
-
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -867,13 +866,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user_id = int(parts[3])
         group_chat_id = int(parts[4])
         
-        try:
-            target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            target_user_mention = target_user.user.mention
-        except Exception:
-            target_user_mention = f"User (<code>{target_user_id}</code>)"
-
-        is_biolink_approved = await is_biolink_whitelisted(target_user_id)
+        target_user = await client.get_chat_member(group_chat_id, target_user_id)
+        target_user_mention = target_user.user.mention
+        
+        is_biolink_approved = db is not None and db.biolink_exceptions is not None and db.biolink_exceptions.find_one({"user_id": target_user_id})
 
         actions_text = (
             f"{target_user_mention} ({target_user_id}) ke liye actions:\n"
@@ -904,11 +900,8 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         await add_biolink_whitelist(target_user_id)
         await reset_warnings(target_user_id, chat_id)
         
-        try:
-            target_user = await client.get_chat_member(chat_id, target_user_id)
-            mention = target_user.user.mention
-        except Exception:
-            mention = f"User (<code>{target_user_id}</code>)"
+        target_user = await client.get_chat_member(chat_id, target_user_id)
+        mention = target_user.user.mention
 
         keyboard = [
             [
@@ -930,11 +923,8 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         chat_id = int(data.split('_')[3])
         await remove_biolink_whitelist(target_user_id)
 
-        try:
-            target_user = await client.get_chat_member(chat_id, target_user_id)
-            mention = target_user.user.mention
-        except Exception:
-            mention = f"User (<code>{target_user_id}</code>)"
+        target_user = await client.get_chat_member(chat_id, target_user_id)
+        mention = target_user.user.mention
         
         keyboard = [
             [
@@ -983,13 +973,9 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 permissions=permissions,
                 until_date=until_date
             )
-            try:
-                target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-                logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
-            except Exception:
-                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-
+            target_user = await client.get_chat_member(group_chat_id, target_user_id)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko {duration_str} ke liye mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+            logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
         except Exception as e:
             await query.edit_message_text(f"Mute karte samay error hui: {e}")
             logger.error(f"Error muting user {target_user_id} in {group_chat_id}: {e}")
@@ -1000,12 +986,9 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
-            try:
-                target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-                logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
-            except Exception:
-                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+            target_user = await client.get_chat_member(group_chat_id, target_user_id)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+            logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
             await query.edit_message_text(f"Ban karte samay error hui: {e}")
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1016,12 +999,9 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
-            try:
-                target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
-                logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
-            except Exception:
-                await query.edit_message_text(f"✅ User (<code>{target_user_id}</code>) ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+            target_user = await client.get_chat_member(group_chat_id, target_user_id)
+            await query.edit_message_text(f"✅ {target_user.user.mention} ko group se nikal diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+            logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
         except Exception as e:
             await query.edit_message_text(f"Kick karte samay error hui: {e}")
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
@@ -1036,11 +1016,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             return
 
         try:
-            try:
-                target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                user_mention = target_user.user.mention
-            except Exception:
-                user_mention = f"User (<code>{target_user_id}</code>)"
+            target_user = await client.get_chat_member(group_chat_id, target_user_id)
             
             warnings_doc = db.warnings.find_one_and_update(
                 {"user_id": target_user_id, "chat_id": group_chat_id},
@@ -1052,7 +1028,7 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             
             warn_message = (
                 f"🚨 <b>Chetavni</b>\n\n"
-                f"➡️ {user_mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
+                f"➡️ {target_user.user.mention}, aapko group ke niyam todne ke liye chetavni di jaati hai. Please group ke rules follow karein.\n\n"
                 f"➡️ <b>Yeh aapki {warn_count}vi chetavni hai.</b>"
             )
             
@@ -1067,13 +1043,13 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
                 )
                 permanent_mute_message = (
                     f"❌ <b>Permanent Mute</b>\n\n"
-                    f"➡️ {user_mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
+                    f"➡️ {target_user.user.mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
                 )
                 await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
-                await query.edit_message_text(f"✅ {user_mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko {warn_count} chetavaniyan milne ke baad permanent mute kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
-                await query.edit_message_text(f"✅ {user_mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ {target_user.user.mention} ko chetavni bhej di gayi hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
                 
         except Exception as e:
@@ -1094,27 +1070,24 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
 
         case_id_value = incident_data["case_id"] if incident_data else "N/A"
         reason = incident_data["reason"] if incident_data else "Ulanghan"
-        
-        # Check if case_channel_message_id exists to build URL
         case_channel_message_id = incident_data.get("case_channel_message_id") if incident_data else None
         
-        if case_channel_message_id and CASE_CHANNEL_USERNAME:
-            case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
-        elif case_channel_message_id and CASE_CHANNEL_ID:
-            channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
-            case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
+        if case_channel_message_id and CASE_CHANNEL_ID:
+            if CASE_CHANNEL_ID < 0:
+                channel_link_id = str(CASE_CHANNEL_ID).replace('-100', '')
+                case_detail_url = f"https://t.me/c/{channel_link_id}/{case_channel_message_id}"
+            else:
+                case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{case_channel_message_id}"
+        elif CASE_CHANNEL_USERNAME:
+             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}"
         else:
             case_detail_url = "https://t.me/telegram"
 
-        try:
-            user_obj = await client.get_chat_member(group_chat_id, target_user_id)
-            user_mention = user_obj.user.mention
-        except Exception:
-            user_mention = f"User (<code>{target_user_id}</code>)"
-            
+        user_obj = await client.get_chat_member(group_chat_id, target_user_id)
+
         notification_message = (
             f"🚨 <b>Group mein Niyam Ulanghan!</b>\n\n"
-            f"➡️ <b>User:</b> {user_mention}\n"
+            f"➡️ <b>User:</b> {user_obj.user.mention}\n"
             f"➡️ <b>Reason:</b> \"{reason} ki wajah se message hata diya gaya hai।\"\n\n"
             f"➡️ <b>Case ID:</b> <code>{case_id_value}</code>"
         )
@@ -1123,11 +1096,12 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             [
                 InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={target_user_id}"),
                 InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
-            ],
-            [
-                InlineKeyboardButton("📄 View Case Details", url=case_detail_url)
             ]
         ]
+        
+        if case_detail_url and case_detail_url != "https://t.me/":
+            keyboard.append([InlineKeyboardButton("📄 View Case Details", url=case_detail_url)])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
