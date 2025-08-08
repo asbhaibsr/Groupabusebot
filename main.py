@@ -1613,4 +1613,4 @@ if __name__ == "__main__":
     # The client.run() method handles starting the bot and running event loops
     logger.info("Bot is starting...")
     client.run()
-    logger.info("Bot stopped
+    logger.info("Bot stopped")
