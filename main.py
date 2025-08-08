@@ -19,7 +19,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
-# NOTE: It's assumed profanity_filter.py is a separate file you have created.
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
@@ -27,19 +26,22 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# NOTE: Set a default value to prevent errors if the variable is not set.
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'(https?://|www\.)[a-zA-Z0-9.\-]+(\.[a-zA-Z]{2,})+(/[a-zA-Z0-9._%+-]*)*')
+
+# Corrected regex pattern to be case-insensitive for 'HTTPS' and to handle @usernames
+URL_PATTERN = re.compile(r'(https?://|www\.)[a-zA-Z0-9.\-]+(\.[a-zA-Z]{2,})+(/[a-zA-Z0-9._%+-]*)*', re.IGNORECASE)
+USERNAME_PATTERN = re.compile(r'@\w+', re.IGNORECASE)
+
 TAG_MESSAGES = {}
 
 # --- New Constants from your first snippet ---
 DEFAULT_WARNING_LIMIT = 3
-DEFAULT_PUNISHMENT = "mute"  # Options: "mute", "ban"
+DEFAULT_PUNISHMENT = "mute"
 DEFAULT_CONFIG = ("warn", DEFAULT_WARNING_LIMIT, DEFAULT_PUNISHMENT)
 
 # --- Logging Setup ---
@@ -81,7 +83,6 @@ def init_mongodb():
         db.config.create_index("chat_id", unique=True)
         db.whitelist.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         
-        # New collection for biolink exceptions (from your other code)
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -119,7 +120,6 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     else:
         logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
 
-# --- Helper functions for warnings and biolink exceptions (Updated for pymongo) ---
 def get_config_sync(chat_id):
     if db is None: return DEFAULT_CONFIG
     config = db.config.find_one({"chat_id": chat_id})
@@ -137,7 +137,6 @@ def update_config_sync(chat_id, mode=None, limit=None, penalty=None):
 
 def is_whitelisted_sync(chat_id, user_id):
     if db is None: return False
-    # I am assuming 'whitelist' collection handles both types of exceptions.
     return db.whitelist.find_one({"chat_id": chat_id, "user_id": user_id}) is not None
 
 def add_whitelist_sync(chat_id, user_id):
@@ -171,7 +170,6 @@ def reset_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
-# --- Common Incident Handler Function ---
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
     user_mention = user.mention
@@ -208,7 +206,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
         
-        # Log to channel after sending the notification
         log_message = (
             f"🚨 <b>Incident Detected</b> 🚨\n\n"
             f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
@@ -590,18 +587,15 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
-        else: # New user joined
-            # Check for URL in new member's bio
+        else:
             try:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
-                # Check for bio link and handle it
                 if URL_PATTERN.search(bio):
-                    # Here we call the handle_bio_link function, just like in the main handler
-                    await handle_bio_link(client, message, member, chat)
+                    # Call the function for new members
+                    await handle_incident(client, chat.id, member, "बायो में लिंक (Bio-Link)", message, "bio_link")
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
-
 
 # --- Tagging Commands ---
 @client.on_message(filters.command("tagall") & filters.group)
@@ -612,12 +606,21 @@ async def tag_all(client: Client, message: Message) -> None:
         return
 
     chat_id = message.chat.id
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
 
     try:
-        members_count = await client.get_chat_members_count(chat_id)
-        message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Attention Everyone!"
+        tagged_members = []
+        async for member in client.get_chat_members(chat_id):
+            if not member.user.is_bot:
+                tagged_members.append(member.user.mention)
+        
+        if not tagged_members:
+            await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।")
+            return
 
-        final_message = f"Is group mein {members_count} members hain.\n\nMessage: {message_text}"
+        final_message = f"<b>टैग किए गए सदस्य:</b>\n"
+        final_message += " ".join(tagged_members)
+        final_message += f"\n\n<b>मैसेज:</b> {message_text}"
 
         sent_message = await message.reply_text(
             final_message,
@@ -630,7 +633,7 @@ async def tag_all(client: Client, message: Message) -> None:
 
     except Exception as e:
         logger.error(f"Error in /tagall command: {e}")
-        await message.reply_text(f"Tag karte samay error hui: {e}")
+        await message.reply_text(f"टैग करते समय error हुई: {e}")
 
 
 @client.on_message(filters.command("admin") & filters.group)
@@ -755,17 +758,14 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
         return
 
-    # 2. Check for URLs directly in the message
-    if URL_PATTERN.search(message_text):
-        await handle_incident(client, chat.id, user, "मैसेज में लिंक (Link in Message) 🔗", message, "link_in_message")
+    # 2. Check for URLs directly in the message or @usernames
+    if URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text):
+        await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
         return
-    
+
 
 # --- UPDATED BioLink Check Function (from your code snippet) ---
 async def check_and_delete_biolink(client: Client, message: Message):
-    """
-    Checks if a user has a link in their bio and deletes their message.
-    """
     user = message.from_user
     user_id = user.id
     chat_id = message.chat.id
@@ -773,7 +773,6 @@ async def check_and_delete_biolink(client: Client, message: Message):
     if not user:
         return False
     
-    # Check if the sender is an admin or whitelisted, if so, do nothing
     is_sender_admin = await is_group_admin(chat_id, user_id)
     is_biolink_exception = is_whitelisted_sync(chat_id, user_id)
 
@@ -781,17 +780,13 @@ async def check_and_delete_biolink(client: Client, message: Message):
         return False
     
     try:
-        # Fetch the user's profile to get their bio
         user_chat_obj = await client.get_chat(user_id)
         user_bio = user_chat_obj.bio or ""
         
-        # Check if the user's bio contains any URL
         if URL_PATTERN.search(user_bio):
             try:
-                # Delete the message
                 await message.delete()
 
-                # Get group settings for punishment
                 mode, limit, penalty = get_config_sync(chat_id)
                 full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
                 mention = f"[{full_name}](tg://user?id={user.id})"
@@ -826,7 +821,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
 
                     except Exception as e:
                         logger.error(f"Error sending bio-link warning: {e}")
-                        return True # Message was still deleted, so return True
+                        return True
 
                     if count >= limit:
                         try:
@@ -834,7 +829,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
                                 await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
                                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                                 await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                            else:  # ban
+                            else:
                                 await client.ban_chat_member(chat_id, user.id)
                                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                                 await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -850,13 +845,13 @@ async def check_and_delete_biolink(client: Client, message: Message):
 
                         except errors.ChatAdminRequired:
                             await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-                else:  # direct mute or ban
+                else:
                     try:
                         if penalty == "mute":
                             await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
                             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                             await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                        else:  # ban
+                        else:
                             await client.ban_chat_member(chat_id, user.id)
                             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                             await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -873,12 +868,10 @@ async def check_and_delete_biolink(client: Client, message: Message):
                     except errors.ChatAdminRequired:
                         return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
 
-                # Return True to indicate that the message was deleted and a biolink was found
                 return True
             except Exception:
-                pass # Ignore errors if deletion fails
+                pass
                     
-        # Return False if no action was taken
         return False
 
     except Exception:
@@ -898,22 +891,25 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         return
 
     is_sender_admin = await is_group_admin(chat.id, user.id)
-    if not is_sender_admin:
-        if profanity_filter is not None and profanity_filter.contains_profanity(edited_message.text):
-            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में गाली-गलौज 😡", edited_message, "edited_message_abuse")
-            return
+    if is_sender_admin or is_whitelisted_sync(chat.id, user.id):
+        return
 
-        if URL_PATTERN.search(edited_message.text):
-            await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक 🔗", edited_message, "edited_message_link")
-            return
+    # Check for profanity in edited message
+    if profanity_filter is not None and profanity_filter.contains_profanity(edited_message.text):
+        await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में गाली-गलौज 😡", edited_message, "edited_message_abuse")
+        return
 
-        # Any edited message from a non-admin will be deleted.
-        try:
-            await client.delete_messages(chat_id=chat.id, message_ids=edited_message.id)
-            logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
-        except Exception as e:
-            logger.error(f"Error deleting edited message in {chat.id}: {e}")
+    # Check for links or usernames in edited message
+    if URL_PATTERN.search(edited_message.text) or USERNAME_PATTERN.search(edited_message.text):
+        await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक या यूज़रनेम 🔗", edited_message, "edited_message_link")
+        return
 
+    # If no violation, just delete edited message from non-admin
+    try:
+        await client.delete_messages(chat_id=chat.id, message_ids=edited_message.id)
+        logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
+    except Exception as e:
+        logger.error(f"Error deleting edited message in {chat.id}: {e}")
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -937,7 +933,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             except MessageNotModified:
                 pass
             return
-    else:  # Private chat, allow all callbacks
+    else:
         if data == "close":
             try:
                 await query.message.delete()
@@ -1062,7 +1058,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.user.first_name}{(' ' + user.user.last_name) if user.user.last_name else ''}"
-            mention = f"[{full_name}](tg://user?id={target_id})"
+            # Corrected HTML link formatting for view profile
+            mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
         except Exception:
             mention = f"User (`{target_id}`)"
         kb = InlineKeyboardMarkup([
