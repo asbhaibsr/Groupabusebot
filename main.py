@@ -180,16 +180,24 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     except Exception as e:
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
+    full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
+    user_mention_text = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
+
     notification_text = (
-        f"🚨 <b>नियम उल्लंघन</b> 🚨\n\n"
-        f"<b>👤 यूज़र:</b> {user_mention} (`{user.id}`)\n"
-        f"<b>📝 कारण:</b> {reason}\n\n"
-        f"कृपया नीचे दिए गए विकल्प चुनें।"
+        f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
+        f"It contained language that violates our community guidelines.\n\n"
+        f"To see what you did, click the **View case details** button below\n\n"
+        f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
+        f"<b>Your Message:</b>\n"
+        f"<a href='tg://spoiler'>{original_message.text}</a>"
     )
+
+    # Use user mention in the button text
+    user_button_text = f"👤 {full_name}"
 
     keyboard = [
         [
-            InlineKeyboardButton("👤 User Profile", url=f"tg://user?id={user.id}"),
+            InlineKeyboardButton(user_button_text, url=f"tg://user?id={user.id}"),
             InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{user.id}_{chat_id}")
         ],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
@@ -613,8 +621,7 @@ async def tag_all(client: Client, message: Message) -> None:
         members_to_tag = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
-                full_name = f"{member.user.first_name}{(' ' + member.user.last_name) if member.user.last_name else ''}"
-                members_to_tag.append(f"👤 <a href='tg://user?id={member.user.id}'>{full_name}</a>")
+                members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>👤</a>")
 
         if not members_to_tag:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
@@ -659,8 +666,7 @@ async def online_tag(client: Client, message: Message) -> None:
         online_members_to_tag = []
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot and member.user.status in [enums.UserStatus.ONLINE, enums.UserStatus.RECENTLY]:
-                full_name = f"{member.user.first_name}{(' ' + member.user.last_name) if member.user.last_name else ''}"
-                online_members_to_tag.append(f"🟢 <a href='tg://user?id={member.user.id}'>{full_name}</a>")
+                online_members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>🟢</a>")
 
         if not online_members_to_tag:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
@@ -851,6 +857,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
                 mode, limit, penalty = get_config_sync(chat_id)
                 full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
                 mention = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
+                user_button_text = f"👤 {full_name}"
 
                 if mode == "warn":
                     count = increment_warning_sync(chat_id, user.id)
@@ -1118,7 +1125,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         reset_warnings_sync(chat_id, target_id)
         try:
             user = await client.get_chat_member(chat_id, target_id)
-            full_name = f"{user.user.first_name}{(' ' + user.user.last_name) if user.user.last_name else ''}"
+            full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
             # Corrected HTML link formatting for view profile
             mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
         except Exception:
@@ -1327,7 +1334,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Ban करते समय error हुई: {e}")
+                await query.message.edit_text(f"Ban کرتے समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1347,7 +1354,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Kick کرتے समय error हुई: {e}")
+                await query.message.edit_text(f"Kick करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
