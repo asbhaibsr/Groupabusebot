@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
+# NOTE: It's assumed profanity_filter.py is a separate file you have created.
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
@@ -203,6 +204,18 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             parse_mode=enums.ParseMode.HTML
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
+        
+        # Log to channel after sending the notification
+        log_message = (
+            f"🚨 <b>Incident Detected</b> 🚨\n\n"
+            f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
+            f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+            f"<b>Reason:</b> {reason}\n"
+            f"<b>Case Type:</b> {case_type}\n"
+            f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        )
+        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
     except Exception as e:
         logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
 
@@ -574,6 +587,16 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
+        else: # New user joined
+            # Check for URL in new member's bio
+            try:
+                user_profile = await client.get_chat(member.id)
+                bio = user_profile.bio or ""
+                if URL_PATTERN.search(bio):
+                    await handle_bio_link(client, message, member, chat)
+            except Exception as e:
+                logger.error(f"Error checking bio for new member {member.id}: {e}")
+
 
 # --- Tagging Commands ---
 @client.on_message(filters.command("tagall") & filters.group)
@@ -748,7 +771,9 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
     try:
         await message.delete()
     except errors.MessageDeleteForbidden:
-        return await message.reply_text("Please grant me delete permission.")
+        # If bot can't delete, it can't punish either, so return.
+        await message.reply_text("Please grant me delete permission.")
+        return
 
     mode, limit, penalty = get_config_sync(chat.id)
 
@@ -774,6 +799,17 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
 
         try:
             sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+            
+            # Log the bio-link warning
+            log_message = (
+                f"🚨 <b>Bio-Link Detected (Warning)</b> 🚨\n\n"
+                f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
+                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                f"<b>Current Warnings:</b> {count}/{limit}\n"
+                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+            )
+            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
         except Exception as e:
             logger.error(f"Error sending bio-link warning: {e}")
             return
@@ -789,6 +825,16 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                     await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
 
+                # Log the final punishment
+                log_message = (
+                    f"🚨 <b>Bio-Link Punishment</b> 🚨\n\n"
+                    f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
+                    f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                    f"<b>Action:</b> User was {penalty}d after {limit} warnings.\n"
+                    f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+                )
+                await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
             except errors.ChatAdminRequired:
                 await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
     else:  # direct mute or ban
@@ -801,6 +847,17 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
                 await client.ban_chat_member(chat.id, user.id)
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                 await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+            # Log the direct punishment
+            log_message = (
+                f"🚨 <b>Bio-Link Direct Punishment</b> 🚨\n\n"
+                f"<b>Group:</b> {chat.title} (`{chat.id}`)\n"
+                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+                f"<b>Action:</b> User was directly {penalty}d.\n"
+                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+            )
+            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+
         except errors.ChatAdminRequired:
             return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
 
@@ -808,7 +865,7 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
-    if not edited_message:
+    if not edited_message or not edited_message.text:
         return
 
     user = edited_message.from_user
@@ -827,8 +884,12 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
             await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक 🔗", edited_message, "edited_message_link")
             return
 
-        # Handle other edits for non-admins if needed, for example:
-        # await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में अनियमितता ✍️", edited_message, "edited_message")
+        # Any edited message from a non-admin will be deleted.
+        try:
+            await client.delete_messages(chat_id=chat.id, message_ids=edited_message.id)
+            logger.info(f"Deleted edited message from non-admin user {user.id} in chat {chat.id}.")
+        except Exception as e:
+            logger.error(f"Error deleting edited message in {chat.id}: {e}")
 
 
 # --- Callback Query Handlers ---
