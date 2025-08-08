@@ -11,26 +11,25 @@ from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
-from pyrogram.errors import BadRequest, Forbidden
-
-from flask import Flask, request, jsonify
+from pyrogram.errors import BadRequest, Forbidden, Unauthorized, MessageNotModified
 
 # Custom module import (ensure this file exists and is correctly configured)
+# The profanity_filter.py should be in the same directory.
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
+# You can set these environment variables in your deployment settings (e.g., Koyeb)
+# Please check your environment variables carefully for correct values.
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-# Bot will now read these IDs directly from the code
-# Make sure these are your correct channel IDs
-LOG_CHANNEL_ID = -1002352329534
-CASE_CHANNEL_ID = -1002717243409
-
-CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-ADMIN_USER_IDS = [7315805581]
+
+# Ensure these IDs are correct and that the bot is an admin in these channels.
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1002352329534))
+CASE_CHANNEL_ID = int(os.getenv("CASE_CHANNEL_ID", -1002717243409))
+CASE_CHANNEL_USERNAME = os.getenv("CASE_CHANNEL_USERNAME", "aspubliclogs")
+ADMIN_USER_IDS = [7315805581]  # List of bot admin user IDs
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
@@ -45,24 +44,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Flask App for Health Check ---
+from flask import Flask, request, jsonify
 app = Flask(__name__)
 
-# --- Pyrogram Client Initialization ---
-client = Client(
-    "my_bot_session",
-    bot_token=TELEGRAM_BOT_TOKEN,
-    api_id=API_ID,
-    api_hash=API_HASH
-)
+@app.route('/')
+def health_check():
+    """Simple health check endpoint for Koyeb."""
+    return jsonify({"status": "healthy", "bot_running": True, "mongodb_connected": db is not None}), 200
 
+def run_flask_app():
+    """Runs the Flask application."""
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- MongoDB and Pyrogram Client Initialization ---
 mongo_client = None
 db = None
 profanity_filter = None
+client = None
 
-# --- MongoDB Initialization ---
 def init_mongodb():
     global mongo_client, db, profanity_filter
-    if MONGO_DB_URI is None:
+    if not MONGO_DB_URI:
         logger.error("MONGO_DB_URI environment variable is not set. Cannot connect to MongoDB. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         return
@@ -71,26 +75,15 @@ def init_mongodb():
         mongo_client = MongoClient(MONGO_DB_URI)
         db = mongo_client.get_database("asfilter")
 
-        collection_names = db.list_collection_names()
-        
-        if "groups" not in collection_names:
-            db.create_collection("groups")
-        db.groups.create_index("chat_id", unique=True)
+        # Create collections and indices if they don't exist
+        for col_name in ["groups", "users", "incidents", "biolink_exceptions", "warnings"]:
+            if col_name not in db.list_collection_names():
+                db.create_collection(col_name)
 
-        if "users" not in collection_names:
-            db.create_collection("users")
+        db.groups.create_index("chat_id", unique=True)
         db.users.create_index("user_id", unique=True)
-        
-        if "incidents" not in collection_names:
-            db.create_collection("incidents")
         db.incidents.create_index("case_id", unique=True)
-        
-        if "biolink_exceptions" not in collection_names:
-            db.create_collection("biolink_exceptions")
         db.biolink_exceptions.create_index("user_id", unique=True)
-        
-        if "warnings" not in collection_names:
-            db.create_collection("warnings")
         db.warnings.create_index([("user_id", 1), ("chat_id", 1)], unique=True)
         
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
@@ -99,6 +92,24 @@ def init_mongodb():
         logger.error(f"Failed to connect to MongoDB or initialize collections: {e}. Profanity filter will use default list.")
         profanity_filter = ProfanityFilter(mongo_uri=None)
         logger.warning("Falling back to default profanity list due to MongoDB connection error.")
+
+def init_pyrogram_client():
+    global client
+    # Pyrogram client initialization. Pass proxy if needed.
+    # PROXY = {
+    #     "scheme": "socks5",
+    #     "hostname": "127.0.0.1",
+    #     "port": 9050,
+    #     "username": "user",
+    #     "password": "password"
+    # }
+    client = Client(
+        "my_bot_session",
+        bot_token=TELEGRAM_BOT_TOKEN,
+        api_id=API_ID,
+        api_hash=API_HASH,
+        # proxy=PROXY
+    )
 
 # --- Helper Functions ---
 def is_admin(user_id: int) -> bool:
@@ -118,12 +129,11 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID."""
-    # This condition is fixed to work with negative channel IDs
-    if LOG_CHANNEL_ID and LOG_CHANNEL_ID != 0:
+    if LOG_CHANNEL_ID:
         try:
             await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
-        except (BadRequest, Forbidden) as e:
-            logger.error(f"Cannot send to log channel: {e}. Channel may not exist or bot lacks permissions.")
+        except (BadRequest, Forbidden, Unauthorized) as e:
+            logger.error(f"Cannot send to log channel {LOG_CHANNEL_ID}: {e}. Bot may not be in the channel or lacks permissions.")
         except Exception as e:
             logger.error(f"Error logging to channel: {e}")
     else:
@@ -168,7 +178,7 @@ async def remove_biolink_whitelist(user_id: int):
 
 # --- Common Incident Handler Function ---
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, case_id=None):
-    """Common function to handle all incidents (abuse, bio link, edited message)."""
+    """Common function to handle all incidents."""
     original_message_id = original_message.id
     message_text = original_message.text or "No text content"
     if not case_id:
@@ -176,16 +186,15 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
     try:
         await client.delete_messages(chat_id=chat_id, message_ids=original_message_id)
-        logger.info(f"Deleted {reason} message from {user.username or user.mention} ({user.id}) in {chat_id}.")
+        logger.info(f"Deleted {reason} message from {user.mention} ({user.id}) in {chat_id}.")
     except Exception as e:
-        logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
+        logger.error(f"Error deleting message in {chat_id}: {e}. Bot may not have 'Delete Messages' permission.")
 
     sent_details_msg = None
     forwarded_message_id = None
     case_detail_url = ""
 
-    # This condition is fixed to work with negative channel IDs
-    if CASE_CHANNEL_ID and CASE_CHANNEL_ID != 0:
+    if CASE_CHANNEL_ID:
         try:
             details_message_text = (
                 f"🚨 <b>नया उल्लंघन ({case_type.upper()})</b> 🚨\n\n"
@@ -209,10 +218,10 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 case_detail_url = f"https://t.me/c/{channel_link_id}/{sent_details_msg.id}"
             elif sent_details_msg and CASE_CHANNEL_USERNAME:
                 case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}/{sent_details_msg.id}"
-            logger.info(f"Incident content sent to case channel with spoiler. URL: {case_detail_url}")
+            logger.info(f"Incident content sent to case channel. URL: {case_detail_url}")
 
-        except Exception as e:
-            logger.error(f"Error sending incident details to case channel: {e}")
+        except (BadRequest, Forbidden, Unauthorized) as e:
+            logger.error(f"Error sending incident details to case channel {CASE_CHANNEL_ID}: {e}")
             case_detail_url = f"https://t.me/{CASE_CHANNEL_USERNAME}" if CASE_CHANNEL_USERNAME else "https://t.me/telegram"
 
     if db is not None and db.incidents is not None:
@@ -220,7 +229,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             db.incidents.insert_one({
                 "case_id": case_id,
                 "user_id": user.id,
-                "user_name": user.mention,
+                "user_name": user.first_name,
                 "user_username": user.username,
                 "chat_id": chat_id,
                 "chat_title": original_message.chat.title,
@@ -263,7 +272,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
     except Exception as e:
-        logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
+        logger.error(f"Error sending notification in chat {chat_id}: {e}. Bot may not have 'Post Messages' permission.")
         try:
             await client.send_message(
                 chat_id=chat_id,
@@ -274,8 +283,9 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             logger.error(f"Couldn't send even simple notification in chat {chat_id}: {simple_e}")
             
 # --- Bot Commands Handlers ---
-@client.on_message(filters.command("start"))
+@Client.on_message(filters.command("start"))
 async def start(client: Client, message: Message) -> None:
+    # ... (बाकी स्टार्ट कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     user = message.from_user
     chat = message.chat
     bot_info = await client.get_me()
@@ -360,9 +370,9 @@ async def start(client: Client, message: Message) -> None:
         except Exception as e:
             logger.error(f"Error handling start in group: {e}")
 
-
-@client.on_message(filters.command("stats") & filters.user(ADMIN_USER_IDS))
+@Client.on_message(filters.command("stats") & filters.user(ADMIN_USER_IDS))
 async def stats(client: Client, message: Message) -> None:
+    # ... (बाकी स्टैट्स कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     if not is_admin(message.from_user.id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -394,8 +404,10 @@ async def stats(client: Client, message: Message) -> None:
     await message.reply_text(stats_message, parse_mode=enums.ParseMode.HTML)
     logger.info(f"Admin {message.from_user.id} requested stats.")
 
-@client.on_message(filters.command("broadcast") & filters.user(ADMIN_USER_IDS) & filters.private)
+
+@Client.on_message(filters.command("broadcast") & filters.user(ADMIN_USER_IDS) & filters.private)
 async def broadcast_command(client: Client, message: Message) -> None:
+    # ... (ब्रॉडकास्ट कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     if not is_admin(message.from_user.id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -404,8 +416,9 @@ async def broadcast_command(client: Client, message: Message) -> None:
     BROADCAST_MESSAGE[message.from_user.id] = "waiting_for_message"
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
+@Client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
 async def handle_broadcast_message(client: Client, message: Message) -> None:
+    # ... (ब्रॉडकास्ट हैंडलिंग का कोड जैसा है, वैसा ही रहेगा) ...
     user = message.from_user
     
     if BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
@@ -430,6 +443,7 @@ async def handle_broadcast_message(client: Client, message: Message) -> None:
         BROADCAST_MESSAGE.pop(user.id, None)
 
 async def confirm_broadcast(client: Client, query: CallbackQuery) -> None:
+    # ... (ब्रॉडकास्ट कन्फर्मेशन का कोड जैसा है, वैसा ही रहेगा) ...
     await query.answer()
     user_id = query.from_user.id
 
@@ -503,6 +517,7 @@ async def confirm_broadcast(client: Client, query: CallbackQuery) -> None:
         await query.edit_message_text("Broadcast message not found.")
 
 async def cancel_broadcast(client: Client, query: CallbackQuery) -> None:
+    # ... (ब्रॉडकास्ट कैंसल करने का कोड जैसा है, वैसा ही रहेगा) ...
     await query.answer()
     user_id = query.from_user.id
     
@@ -512,8 +527,9 @@ async def cancel_broadcast(client: Client, query: CallbackQuery) -> None:
     await query.edit_message_text("❌ Broadcast cancel kar diya gaya hai.")
 
 
-@client.on_message(filters.command("addabuse") & filters.user(ADMIN_USER_IDS))
+@Client.on_message(filters.command("addabuse") & filters.user(ADMIN_USER_IDS))
 async def add_abuse_word(client: Client, message: Message) -> None:
+    # ... (बाकी गाली शब्द जोड़ने का कोड जैसा है, वैसा ही रहेगा) ...
     if not is_admin(message.from_user.id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
@@ -539,8 +555,9 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         logger.error("Profanity filter not initialized, cannot add abuse word.")
 
 
-@client.on_message(filters.new_chat_members)
+@Client.on_message(filters.new_chat_members)
 async def welcome_new_member(client: Client, message: Message) -> None:
+    # ... (बाकी नए सदस्यों का स्वागत करने का कोड जैसा है, वैसा ही रहेगा) ...
     new_members = message.new_chat_members
     chat = message.chat
     bot_info = await client.get_me()
@@ -584,8 +601,9 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
 
 # --- Tagging Commands ---
-@client.on_message(filters.command("tagall") & filters.group)
+@Client.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client: Client, message: Message) -> None:
+    # ... (टैगॉल कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
     if not is_sender_admin:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
@@ -612,8 +630,9 @@ async def tag_all(client: Client, message: Message) -> None:
         logger.error(f"Error in /tagall command: {e}")
         await message.reply_text(f"Tag karte samay error hui: {e}")
 
-@client.on_message(filters.command("onlinetag") & filters.group)
+@Client.on_message(filters.command("onlinetag") & filters.group)
 async def tag_online(client: Client, message: Message) -> None:
+    # ... (ऑनलाइन टैग कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
     if not is_sender_admin:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
@@ -628,8 +647,9 @@ async def tag_online(client: Client, message: Message) -> None:
         await message.reply_text(f"Online members ko tag karte samay error hui: {e}")
 
 
-@client.on_message(filters.command("admin") & filters.group)
+@Client.on_message(filters.command("admin") & filters.group)
 async def tag_admins(client: Client, message: Message) -> None:
+    # ... (एडमिन टैग कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
     if not is_sender_admin:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
@@ -662,8 +682,9 @@ async def tag_admins(client: Client, message: Message) -> None:
         await message.reply_text(f"Admins ko tag karte samay error hui: {e}")
 
 
-@client.on_message(filters.command("tagstop") & filters.group)
+@Client.on_message(filters.command("tagstop") & filters.group)
 async def tag_stop(client: Client, message: Message) -> None:
+    # ... (टैगस्टॉप कमांड का कोड जैसा है, वैसा ही रहेगा) ...
     chat_id = message.chat.id
     is_sender_admin = await is_group_admin(chat_id, message.from_user.id)
     if not is_sender_admin:
@@ -702,8 +723,9 @@ async def tag_stop(client: Client, message: Message) -> None:
         await message.reply_text(f"टैगिंग रोकते समय एक error हुई: {e}")
 
 
-@client.on_message(filters.command("checkperms") & filters.group)
+@Client.on_message(filters.command("checkperms") & filters.group)
 async def check_permissions(client: Client, message: Message):
+    # ... (परमिशन चेक का कोड जैसा है, वैसा ही रहेगा) ...
     chat = message.chat
     
     if not await is_group_admin(chat.id, message.from_user.id):
@@ -730,8 +752,9 @@ async def check_permissions(client: Client, message: Message):
 
 
 # --- Core Message Handler (Profanity, Bio Link, URL in message) ---
-@client.on_message(filters.text & filters.group & ~filters.command([]) & ~filters.via_bot)
+@Client.on_message(filters.text & filters.group & ~filters.command([]) & ~filters.via_bot)
 async def handle_all_messages(client: Client, message: Message) -> None:
+    # ... (मुख्य मैसेज हैंडलर का कोड जैसा है, वैसा ही रहेगा) ...
     user = message.from_user
     chat = message.chat
     message_text = message.text
@@ -755,7 +778,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if not is_sender_admin and not await is_biolink_whitelisted(user.id):
         try:
             user_profile = await client.get_users(user.id)
-            user_bio = user_profile.bio or ""
+            user_bio = getattr(user_profile, 'bio', '')  # Use getattr to safely access bio
             if URL_PATTERN.search(user_bio):
                 await handle_incident(client, chat.id, user, "Bio में लिंक", message, "bio_link")
                 return
@@ -766,8 +789,9 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
 
 # --- Handler for Edited Messages ---
-@client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
+@Client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
+    # ... (एडिट किए गए मैसेज का कोड जैसा है, वैसा ही रहेगा) ...
     if not edited_message:
         return
 
@@ -782,8 +806,9 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         await handle_incident(client, chat.id, user, "एडिट किया गया मैसेज", edited_message, "edited_message")
 
 # --- Callback Query Handlers ---
-@client.on_callback_query()
+@Client.on_callback_query()
 async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
+    # ... (सभी कॉलबैक क्वेरी हैंडलिंग का कोड जैसा है, वैसा ही रहेगा) ...
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat.id
@@ -818,7 +843,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        try:
+            await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
 
     elif data == "other_bots":
         other_bots_text = (
@@ -830,7 +858,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        try:
+            await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
 
     elif data == "donate_info":
         donate_text = (
@@ -843,7 +874,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        try:
+            await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
 
     elif data == "back_to_main_menu":
         bot_info = await client.get_me()
@@ -865,7 +899,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
             [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        try:
+            await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
 
     elif data.startswith("admin_actions_menu_"):
         parts = data.split('_')
@@ -1115,20 +1152,10 @@ async def button_callback_handler(client: Client, query: CallbackQuery) -> None:
     elif data == "cancel_broadcast":
         await cancel_broadcast(client, query)
 
-# --- Flask App for Health Check ---
-@app.route('/')
-def health_check():
-    """Simple health check endpoint for Koyeb."""
-    return jsonify({"status": "healthy", "bot_running": True, "mongodb_connected": db is not None}), 200
-
-def run_flask_app():
-    """Runs the Flask application."""
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
-
 # --- Entry Point ---
 if __name__ == "__main__":
     init_mongodb()
+    init_pyrogram_client()
     
     # Run the Flask app in a separate thread
     flask_thread = threading.Thread(target=run_flask_app)
