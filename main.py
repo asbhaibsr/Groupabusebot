@@ -29,12 +29,17 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # NOTE: Set a default value to prevent errors if the variable is not set.
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-ADMIN_USER_IDS = [7315805581] # NOTE: Replace with your actual admin IDs.
+ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
-URL_PATTERN = re.compile(r'https?://(?:www\.|m\.)?(?:t\.me/|telegra\.ph|github|bit\.ly|tinyurl|discord|t\.co)\S*')
+URL_PATTERN = re.compile(r'(https?://|www\.)[a-zA-Z0-9.\-]+(\.[a-zA-Z]{2,})+(/[a-zA-Z0-9._%+-]*)*')
 TAG_MESSAGES = {}
+
+# --- New Constants from your first snippet ---
+DEFAULT_WARNING_LIMIT = 3
+DEFAULT_PUNISHMENT = "mute"  # Options: "mute", "ban"
+DEFAULT_CONFIG = ("warn", DEFAULT_WARNING_LIMIT, DEFAULT_PUNISHMENT)
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -110,49 +115,45 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     else:
         logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
 
-# --- Helper functions for warnings and biolink exceptions ---
-async def get_config(chat_id):
-    if db is None or db.config is None: return "warn", 3, "mute"
-
+# --- Helper functions for warnings and biolink exceptions (Updated for pymongo) ---
+def get_config_sync(chat_id):
+    if db is None: return DEFAULT_CONFIG
     config = db.config.find_one({"chat_id": chat_id})
-
     if config:
-        return config.get("mode", "warn"), config.get("limit", 3), config.get("penalty", "mute")
-    else:
-        # Return default values if no config is found for the chat
-        return "warn", 3, "mute"
+        return config.get("mode", "warn"), config.get("limit", DEFAULT_WARNING_LIMIT), config.get("penalty", DEFAULT_PUNISHMENT)
+    return DEFAULT_CONFIG
 
-async def update_config(chat_id, mode=None, limit=None, penalty=None):
-    if db is None or db.config is None: return
+def update_config_sync(chat_id, mode=None, limit=None, penalty=None):
+    if db is None: return
     update_doc = {}
     if mode: update_doc["mode"] = mode
-    if limit: update_doc["limit"] = limit
+    if limit is not None: update_doc["limit"] = limit
     if penalty: update_doc["penalty"] = penalty
     db.config.update_one({"chat_id": chat_id}, {"$set": update_doc}, upsert=True)
 
-async def is_whitelisted(chat_id, user_id):
-    if db is None or db.whitelist is None: return False
+def is_whitelisted_sync(chat_id, user_id):
+    if db is None: return False
     return db.whitelist.find_one({"chat_id": chat_id, "user_id": user_id}) is not None
 
-async def add_whitelist(chat_id, user_id):
-    if db is None or db.whitelist is None: return
+def add_whitelist_sync(chat_id, user_id):
+    if db is None: return
     db.whitelist.update_one({"chat_id": chat_id, "user_id": user_id}, {"$set": {"timestamp": datetime.now()}}, upsert=True)
 
-async def remove_whitelist(chat_id, user_id):
-    if db is None or db.whitelist is None: return
+def remove_whitelist_sync(chat_id, user_id):
+    if db is None: return
     db.whitelist.delete_one({"chat_id": chat_id, "user_id": user_id})
 
-async def get_whitelist(chat_id):
-    if db is None or db.whitelist is None: return []
+def get_whitelist_sync(chat_id):
+    if db is None: return []
     return [doc["user_id"] for doc in db.whitelist.find({"chat_id": chat_id})]
 
-async def get_warnings(user_id: int, chat_id: int):
-    if db is None or db.warnings is None: return 0
+def get_warnings_sync(user_id: int, chat_id: int):
+    if db is None: return 0
     warnings_doc = db.warnings.find_one({"user_id": user_id, "chat_id": chat_id})
     return warnings_doc.get("count", 0) if warnings_doc else 0
 
-async def increment_warning(chat_id, user_id):
-    if db is None or db.warnings is None: return 1
+def increment_warning_sync(chat_id, user_id):
+    if db is None: return 1
     warnings_doc = db.warnings.find_one_and_update(
         {"chat_id": chat_id, "user_id": user_id},
         {"$inc": {"count": 1}},
@@ -161,8 +162,8 @@ async def increment_warning(chat_id, user_id):
     )
     return warnings_doc.get("count", 1)
 
-async def reset_warnings(chat_id, user_id):
-    if db is None or db.warnings is None: return
+def reset_warnings_sync(chat_id, user_id):
+    if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
 
@@ -177,7 +178,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
     except Exception as e:
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
 
-    # Custom message and button based on reason
     notification_text = (
         f"🚨 <b>नियम उल्लंघन</b> 🚨\n\n"
         f"<b>👤 यूज़र:</b> {user_mention} (`{user.id}`)\n"
@@ -331,7 +331,7 @@ async def configure(client: Client, message: Message):
     if not await is_group_admin(chat_id, user_id):
         return
 
-    mode, limit, penalty = await get_config(chat_id)
+    mode, limit, penalty = get_config_sync(chat_id)
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Warn Limit", callback_data="warn_limit")],
         [
@@ -359,12 +359,18 @@ async def command_free(client: Client, message: Message):
         target = message.reply_to_message.from_user
     elif len(message.command) > 1:
         arg = message.command[1]
-        target = await client.get_users(int(arg) if arg.isdigit() else arg)
+        try:
+            target = await client.get_users(int(arg) if arg.isdigit() else arg)
+        except Exception:
+            return await client.send_message(chat_id, "<b>Invalid user or id provided.</b>", parse_mode=enums.ParseMode.HTML)
     else:
         return await client.send_message(chat_id, "<b>Reply or use /free user or id to whitelist someone.</b>", parse_mode=enums.ParseMode.HTML)
 
-    await add_whitelist(chat_id, target.id)
-    await reset_warnings(chat_id, target.id)
+    if not target:
+        return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
+
+    add_whitelist_sync(chat_id, target.id)
+    reset_warnings_sync(chat_id, target.id)
 
     text = f"<b>✅ {target.mention} has been added to the whitelist</b>"
     keyboard = InlineKeyboardMarkup([
@@ -386,12 +392,18 @@ async def command_unfree(client: Client, message: Message):
         target = message.reply_to_message.from_user
     elif len(message.command) > 1:
         arg = message.command[1]
-        target = await client.get_users(int(arg) if arg.isdigit() else arg)
+        try:
+            target = await client.get_users(int(arg) if arg.isdigit() else arg)
+        except Exception:
+            return await client.send_message(chat_id, "<b>Invalid user or id provided.</b>", parse_mode=enums.ParseMode.HTML)
     else:
         return await client.send_message(chat_id, "<b>Reply or use /unfree user or id to unwhitelist someone.</b>", parse_mode=enums.ParseMode.HTML)
 
-    if await is_whitelisted(chat_id, target.id):
-        await remove_whitelist(chat_id, target.id)
+    if not target:
+        return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
+
+    if is_whitelisted_sync(chat_id, target.id):
+        remove_whitelist_sync(chat_id, target.id)
         text = f"<b>🚫 {target.mention} has been removed from the whitelist</b>"
     else:
         text = f"<b>ℹ️ {target.mention} is not whitelisted.</b>"
@@ -411,7 +423,7 @@ async def command_freelist(client: Client, message: Message):
     if not await is_group_admin(chat_id, user_id):
         return await message.reply_text("Aap group admin nahi hain.")
 
-    ids = await get_whitelist(chat_id)
+    ids = get_whitelist_sync(chat_id)
     if not ids:
         await client.send_message(chat_id, "<b>⚠️ No users are whitelisted in this group.</b>", parse_mode=enums.ParseMode.HTML)
         return
@@ -701,8 +713,10 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     chat = message.chat
     message_text = message.text
 
-    if not user: return
-    if await is_group_admin(chat.id, user.id) or await is_whitelisted(chat.id, user.id): return
+    if not user:
+        return
+    if await is_group_admin(chat.id, user.id) or is_whitelisted_sync(chat.id, user.id):
+        return
 
     # 1. Check for Profanity
     if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
@@ -715,13 +729,18 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         return
 
     # 3. Check for URL in Bio
-    user_chat = await client.get_chat(user.id)
-    bio = user_chat.bio or ""
+    try:
+        user_chat = await client.get_chat(user.id)
+        bio = user_chat.bio or ""
+    except Exception as e:
+        logger.error(f"Could not fetch bio for user {user.id}: {e}")
+        bio = ""
 
     if URL_PATTERN.search(bio):
         await handle_bio_link(client, message, user, chat)
     else:
-        await reset_warnings(chat.id, user.id)
+        reset_warnings_sync(chat.id, user.id)
+
 
 async def handle_bio_link(client: Client, message: Message, user, chat):
     # This function handles the bio link logic separately for clarity
@@ -731,13 +750,13 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
     except errors.MessageDeleteForbidden:
         return await message.reply_text("Please grant me delete permission.")
 
-    mode, limit, penalty = await get_config(chat.id)
+    mode, limit, penalty = get_config_sync(chat.id)
 
     full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
     mention = f"[{full_name}](tg://user?id={user.id})"
 
     if mode == "warn":
-        count = await increment_warning(chat.id, user.id)
+        count = increment_warning_sync(chat.id, user.id)
 
         warning_text = (
             "🚨 <b>Bio-Link Detected</b>\n\n"
@@ -765,20 +784,20 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
                     await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                     await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                else: # ban
+                else:  # ban
                     await client.ban_chat_member(chat.id, user.id)
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                     await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
 
             except errors.ChatAdminRequired:
                 await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-    else: # direct mute or ban
+    else:  # direct mute or ban
         try:
             if penalty == "mute":
                 await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                 await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-            else: # ban
+            else:  # ban
                 await client.ban_chat_member(chat.id, user.id)
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat.id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
                 await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)।</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -789,12 +808,14 @@ async def handle_bio_link(client: Client, message: Message, user, chat):
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
-    if not edited_message: return
+    if not edited_message:
+        return
 
     user = edited_message.from_user
     chat = edited_message.chat
 
-    if not user: return
+    if not user:
+        return
 
     is_sender_admin = await is_group_admin(chat.id, user.id)
     if not is_sender_admin:
@@ -806,7 +827,8 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
             await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में लिंक 🔗", edited_message, "edited_message_link")
             return
 
-        await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में अनियमितता ✍️", edited_message, "edited_message")
+        # Handle other edits for non-admins if needed, for example:
+        # await handle_incident(client, chat.id, user, "एडिट किए गए मैसेज में अनियमितता ✍️", edited_message, "edited_message")
 
 
 # --- Callback Query Handlers ---
@@ -831,7 +853,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             except MessageNotModified:
                 pass
             return
-    else: # Private chat, allow all callbacks
+    else:  # Private chat, allow all callbacks
         if data == "close":
             try:
                 await query.message.delete()
@@ -843,11 +865,11 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
     # --- BioLink Bot Callbacks ---
     if data == "warn_limit":
-        _, selected_limit, _ = await get_config(chat_id)
+        _, selected_limit, _ = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"3 ✅" if selected_limit==3 else "3", callback_data="setwarn_3"),
-             InlineKeyboardButton(f"4 ✅" if selected_limit==4 else "4", callback_data="setwarn_4"),
-             InlineKeyboardButton(f"5 ✅" if selected_limit==5 else "5", callback_data="setwarn_5")],
+            [InlineKeyboardButton(f"3 ✅" if selected_limit == 3 else "3", callback_data="setwarn_3"),
+             InlineKeyboardButton(f"4 ✅" if selected_limit == 4 else "4", callback_data="setwarn_4"),
+             InlineKeyboardButton(f"5 ✅" if selected_limit == 5 else "5", callback_data="setwarn_5")],
             [InlineKeyboardButton("Back", callback_data="back"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -857,13 +879,13 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     if data in ["mute", "ban"]:
-        await update_config(chat_id, penalty=data)
-        mode, limit, penalty = await get_config(chat_id)
+        update_config_sync(chat_id, penalty=data)
+        mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data="warn_limit")],
             [
-                InlineKeyboardButton("Mute ✅" if penalty=="mute" else "Mute", callback_data="mute"),
-                InlineKeyboardButton("Ban ✅" if penalty=="ban" else "Ban", callback_data="ban")
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban")
             ],
             [InlineKeyboardButton("Close", callback_data="close")]
         ])
@@ -875,11 +897,11 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
     if data.startswith("setwarn_"):
         count = int(data.split("_")[1])
-        await update_config(chat_id, limit=count)
+        update_config_sync(chat_id, limit=count)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"3 ✅" if count==3 else "3", callback_data="setwarn_3"),
-             InlineKeyboardButton(f"4 ✅" if count==4 else "4", callback_data="setwarn_4"),
-             InlineKeyboardButton(f"5 ✅" if count==5 else "5", callback_data="setwarn_5")],
+            [InlineKeyboardButton(f"3 ✅" if count == 3 else "3", callback_data="setwarn_3"),
+             InlineKeyboardButton(f"4 ✅" if count == 4 else "4", callback_data="setwarn_4"),
+             InlineKeyboardButton(f"5 ✅" if count == 5 else "5", callback_data="setwarn_5")],
             [InlineKeyboardButton("Back", callback_data="back"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -894,7 +916,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.restrict_chat_member(group_chat_id, target_id, ChatPermissions(can_send_messages=True))
-            await reset_warnings(group_chat_id, target_id)
+            reset_warnings_sync(group_chat_id, target_id)
             user_obj = await client.get_chat_member(group_chat_id, target_id)
             user_mention = user_obj.user.mention
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Whitelist ✅", callback_data=f"whitelist_{target_id}_{group_chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
@@ -915,7 +937,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         group_chat_id = int(parts[2])
         try:
             await client.unban_chat_member(group_chat_id, target_id)
-            await reset_warnings(group_chat_id, target_id)
+            reset_warnings_sync(group_chat_id, target_id)
             try:
                 user_obj = await client.get_chat_member(group_chat_id, target_id)
                 user_mention = user_obj.user.mention
@@ -935,7 +957,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
     if data.startswith("cancel_warn_"):
         target_id = int(data.split("_")[-1])
-        await reset_warnings(chat_id, target_id)
+        reset_warnings_sync(chat_id, target_id)
         user_obj = await client.get_chat_member(chat_id, target_id)
         full_name = f"{user_obj.user.first_name}{(' ' + user_obj.user.last_name) if user_obj.user.last_name else ''}"
         mention = f"[{full_name}](tg://user?id={target_id})"
@@ -951,8 +973,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
     if data.startswith("whitelist_"):
         target_id = int(data.split("_")[1])
-        await add_whitelist(chat_id, target_id)
-        await reset_warnings(chat_id, target_id)
+        add_whitelist_sync(chat_id, target_id)
+        reset_warnings_sync(chat_id, target_id)
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.user.first_name}{(' ' + user.user.last_name) if user.user.last_name else ''}"
@@ -971,7 +993,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
     if data.startswith("unwhitelist_"):
         target_id = int(data.split("_")[1])
-        await remove_whitelist(chat_id, target_id)
+        remove_whitelist_sync(chat_id, target_id)
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.user.first_name}{(' ' + user.user.last_name) if user.user.last_name else ''}"
@@ -1012,7 +1034,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(help_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
@@ -1027,7 +1049,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await query.edit_message_text(other_bots_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(other_bots_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
@@ -1043,7 +1065,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await query.edit_message_text(donate_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(donate_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
@@ -1070,7 +1092,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(welcome_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
@@ -1101,7 +1123,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         reply_markup = InlineKeyboardMarkup(actions_keyboard)
         try:
-            await query.edit_message_text(actions_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(actions_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
@@ -1160,7 +1182,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.edit_message_text(f"Ban करते समय error हुई: {e}")
+                await query.message.edit_text(f"Ban करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1179,7 +1201,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.edit_message_text(f"Kick करते समय error हुई: {e}")
+                await query.message.edit_text(f"Kick करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
@@ -1189,7 +1211,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         target_user_id = int(parts[1])
         group_chat_id = int(parts[2])
 
-        if db is None or db.warnings is None:
+        if db is None:
             await query.edit_message_text("Database connection available nahi hai. Chetavni nahi de sakte.")
             return
 
@@ -1200,13 +1222,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             except Exception:
                 user_mention = f"User (`{target_user_id}`)"
 
-            warnings_doc = db.warnings.find_one_and_update(
-                {"user_id": target_user_id, "chat_id": group_chat_id},
-                {"$inc": {"count": 1}, "$set": {"last_warned": datetime.now()}},
-                upsert=True,
-                return_document=ReturnDocument.AFTER
-            )
-            warn_count = warnings_doc['count'] if warnings_doc else 1
+            warn_count = increment_warning_sync(group_chat_id, target_user_id)
 
             warn_message = (
                 f"🚨 <b>Chetavni</b> 🚨\n\n"
@@ -1229,20 +1245,20 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 )
                 await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
                 try:
-                    await query.edit_message_text(f"✅ {user_mention} को {warn_count} चेतावनियाँ मिलने के बाद permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {user_mention} को {warn_count} चेतावनियाँ मिलने के बाद permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
                 logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
             else:
                 try:
-                    await query.edit_message_text(f"✅ {user_mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                    await query.message.edit_text(f"✅ {user_mention} को चेतावनी भेज दी गई है। Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
                 except MessageNotModified:
                     pass
                 logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
 
         except Exception as e:
             try:
-                await query.edit_message_text(f"Chetavni bhejte samay error hui: {e}")
+                await query.message.edit_text(f"Chetavni bhejte samay error hui: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error warning user {target_user_id} in {group_chat_id}: {e}")
@@ -1277,7 +1293,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await query.edit_message_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
 
