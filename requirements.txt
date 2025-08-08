@@ -1,7 +1,8 @@
 Flask
-pyrogram==2.0.106
+pyrogram==2.0.108
 motor
 ProfanityFilter
 pymongo
 dnspython==2.6.0
+python-dotenv==1.0.1
 TgCrypto
