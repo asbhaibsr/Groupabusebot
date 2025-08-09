@@ -1642,59 +1642,47 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         except MessageNotModified:
             pass
 
-# CHANGED: Broadcast logic to send to both users and groups with flood control
-@client.on_callback_query(filters.regex("confirm_broadcast"))
-async def handle_confirm_broadcast(client: Client, query: CallbackQuery) -> None:
-    admin_id = query.from_user.id
-    message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
+    # CHANGED: Broadcast logic to send to both users and groups with flood control
+    if data == "confirm_broadcast":
+        admin_id = query.from_user.id
+        message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
 
-    if not message_to_broadcast:
-        await query.message.edit_text("Broadcast message not found. Please try again.")
-        return
+        if not message_to_broadcast:
+            await query.message.edit_text("Broadcast message not found. Please try again.")
+            return
 
-    try:
-        await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
-    except MessageNotModified:
-        pass
-
-    if db is None:
-        await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
-        return
-
-    # Get a list of both groups and users from the database
-    all_chats = []
-    if db.groups is not None:
         try:
-            groups = db.groups.find({})
-            for group in groups:
-                all_chats.append(group.get("chat_id"))
-        except Exception as e:
-            logger.error(f"Error fetching groups from DB for broadcast: {e}")
+            await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
+        except MessageNotModified:
+            pass
 
-    if db.users is not None:
-        try:
-            users = db.users.find({})
-            for user in users:
-                all_chats.append(user.get("user_id"))
-        except Exception as e:
-            logger.error(f"Error fetching users from DB for broadcast: {e}")
+        if db is None:
+            await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
+            return
 
-    success_count = 0
-    fail_count = 0
-    total_chats = len(all_chats)
+        # Get a list of both groups and users from the database
+        all_chats = []
+        if db.groups is not None:
+            try:
+                groups = db.groups.find({})
+                for group in groups:
+                    all_chats.append(group.get("chat_id"))
+            except Exception as e:
+                logger.error(f"Error fetching groups from DB for broadcast: {e}")
 
-    for i, chat_id in enumerate(all_chats):
-        try:
-            await client.copy_message(
-                chat_id=chat_id,
-                from_chat_id=message_to_broadcast.chat.id,
-                message_id=message_to_broadcast.id
-            )
-            success_count += 1
-        except FloodWait as e:
-            logger.warning(f"Broadcast: FloodWait error. Sleeping for {e.value} seconds.")
-            await asyncio.sleep(e.value)
-            # Retry sending the message after the wait
+        if db.users is not None:
+            try:
+                users = db.users.find({})
+                for user in users:
+                    all_chats.append(user.get("user_id"))
+            except Exception as e:
+                logger.error(f"Error fetching users from DB for broadcast: {e}")
+
+        success_count = 0
+        fail_count = 0
+        total_chats = len(all_chats)
+
+        for i, chat_id in enumerate(all_chats):
             try:
                 await client.copy_message(
                     chat_id=chat_id,
@@ -1702,29 +1690,40 @@ async def handle_confirm_broadcast(client: Client, query: CallbackQuery) -> None
                     message_id=message_to_broadcast.id
                 )
                 success_count += 1
-            except Exception as e_retry:
-                logger.error(f"Broadcast retry failed for {chat_id}: {e_retry}")
+            except FloodWait as e:
+                logger.warning(f"Broadcast: FloodWait error. Sleeping for {e.value} seconds.")
+                await asyncio.sleep(e.value)
+                # Retry sending the message after the wait
+                try:
+                    await client.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=message_to_broadcast.chat.id,
+                        message_id=message_to_broadcast.id
+                    )
+                    success_count += 1
+                except Exception as e_retry:
+                    logger.error(f"Broadcast retry failed for {chat_id}: {e_retry}")
+                    fail_count += 1
+            except Exception as e:
+                logger.error(f"Failed to broadcast to chat {chat_id}: {e}")
                 fail_count += 1
-        except Exception as e:
-            logger.error(f"Failed to broadcast to chat {chat_id}: {e}")
-            fail_count += 1
-        
-        # Update progress for every 10 messages
-        if (i + 1) % 10 == 0 or (i + 1) == total_chats:
-            try:
-                await query.message.edit_text(f"📢 Broadcast चल रहा है...\n\nसफलतापूर्वक भेजा गया: {success_count}/{total_chats}\nविफल: {fail_count}/{total_chats}", parse_mode=enums.ParseMode.HTML)
-            except MessageNotModified:
-                pass
+            
+            # Update progress for every 10 messages
+            if (i + 1) % 10 == 0 or (i + 1) == total_chats:
+                try:
+                    await query.message.edit_text(f"📢 Broadcast चल रहा है...\n\nसफलतापूर्वक भेजा गया: {success_count}/{total_chats}\nविफल: {fail_count}/{total_chats}", parse_mode=enums.ParseMode.HTML)
+                except MessageNotModified:
+                    pass
 
-    report_text = f"✅ Broadcast पूरा हुआ!\n\nसफलतापूर्वक भेजा गया: {success_count} चैट में\nविफल: {fail_count} चैट में"
-    try:
-        await query.message.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
-    except MessageNotModified:
-        pass
-    BROADCAST_MESSAGE.pop(admin_id, None)
-    logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} chats.")
+        report_text = f"✅ Broadcast पूरा हुआ!\n\nसफलतापूर्वक भेजा गया: {success_count} चैट में\nविफल: {fail_count} चैट में"
+        try:
+            await query.message.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        BROADCAST_MESSAGE.pop(admin_id, None)
+        logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} chats.")
 
-elif data == "cancel_broadcast":
+    if data == "cancel_broadcast":
         await query.message.edit_text("Broadcast cancelled.")
         user_id = query.from_user.id
         if BROADCAST_MESSAGE.get(user_id):
@@ -1755,4 +1754,3 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped")
-
