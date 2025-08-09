@@ -92,7 +92,6 @@ def init_mongodb():
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
-        asyncio.run(profanity_filter.init_async_db())  # Call the async init method
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB or initialize collections: {e}.")
@@ -184,7 +183,8 @@ def reset_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
-async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, abuse_word=None):
+# User profile button ko hatakar code ko badla gaya hai
+async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
     user_mention = user.mention
 
@@ -209,8 +209,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
          notification_text = (
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
-            f"<b>Your Word</b>\n"
-            f"<span class='tg-spoiler'>{abuse_word}</span>\n\n"
             f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>"
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
@@ -240,17 +238,16 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
         
-        # Log message ko behtar banaya gaya hai, lekin case logs yahan se hata diye gaye hain
-        if case_type == "join_group" or case_type == "left_group":
-            log_message = (
-                f"🚨 <b>Incident Detected</b> 🚨\n\n"
-                f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
-                f"<b>User:</b> {user.mention} (`{user.id}`)\n"
-                f"<b>Reason:</b> {reason}\n"
-                f"<b>Case Type:</b> {case_type}\n"
-                f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-            )
-            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+        # Log message ko behtar banaya gaya hai
+        log_message = (
+            f"🚨 <b>Incident Detected</b> 🚨\n\n"
+            f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
+            f"<b>User:</b> {user.mention} (`{user.id}`)\n"
+            f"<b>Reason:</b> {reason}\n"
+            f"<b>Case Type:</b> {case_type}\n"
+            f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        )
+        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
 
     except Exception as e:
         logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
@@ -583,7 +580,6 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         return
     if profanity_filter is not None:
         try:
-            # Await the async method call
             if await profanity_filter.add_bad_word(word_to_add):
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
@@ -952,11 +948,11 @@ async def tag_stop(client: Client, message: Message) -> None:
             logger.info(f"Admin {message.from_user.id} stopped ongoing tagging in chat {chat_id}.")
         except Exception as e:
             logger.error(f"Error canceling tagging task: {e}")
-            await message.reply_text(f"टैगिंग प्रक्रिया बंद करते समय error hui: {e}")
+            await message.reply_text(f"टैगिंग प्रक्रिया बंद करते समय error हुई: {e}")
         return
 
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
-        await message.reply_text("कोई भी टैगिंग मैसेज नहीं mila jise roka ja sake।")
+        await message.reply_text("कोई भी टैगिंग मैसेज नहीं मिला जिसे रोका ja sake।")
         return
 
     try:
@@ -1029,11 +1025,9 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if await check_and_delete_biolink(client, message):
         return
 
-    if profanity_filter is not None:
-        abuse_word = profanity_filter.find_profanity(message_text)
-        if abuse_word:
-            await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse", abuse_word)
-            return
+    if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
+        await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
+        return
 
     if URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
@@ -1484,7 +1478,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         except Exception as e:
             try:
-                await query.edit_message_text(f"Mute करते समय error hui: {e}")
+                await query.edit_message_text(f"Mute करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error muting user {target_user_id} in {group_chat_id}: {e}")
@@ -1501,10 +1495,10 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ {mention} को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
             except Exception:
-                await query.edit_message_text(f"✅ User (`{target_user_id}`) ko group se ban kar diya gaya hai.", parse_mode=enums.ParseMode.HTML)
+                await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Ban karte samay error hui: {e}")
+                await query.message.edit_text(f"Ban करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error banning user {target_user_id} from {group_chat_id}: {e}")
@@ -1524,7 +1518,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 await query.edit_message_text(f"✅ User (`{target_user_id}`) को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             try:
-                await query.message.edit_text(f"Kick karte samay error hui: {e}")
+                await query.message.edit_text(f"Kick करते समय error हुई: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error kicking user {target_user_id} from {group_chat_id}: {e}")
@@ -1632,7 +1626,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             pass
 
         if db is None or db.groups is None:
-            await query.message.reply_text("Database connection उपलब्ध नहीं hai, Broadcast nahi kar sakte.")
+            await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
             return
 
         groups_list = db.groups.find({})
@@ -1649,7 +1643,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                     logger.error(f"Failed to broadcast to group {chat_id}: {e}")
                     fail_count += 1
 
-        report_text = f"✅ Broadcast pura hua!\n\nSafaltapoorvak bheja gaya: {success_count} samuhon mein\n विफल: {fail_count} samuhon mein"
+        report_text = f"✅ Broadcast पूरा हुआ!\n\nसफलतापूर्वक भेजा गया: {success_count} समूहों में\nविफल: {fail_count} समूहों में"
         await query.message.reply_text(report_text)
         BROADCAST_MESSAGE.pop(admin_id)
         logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} groups.")
