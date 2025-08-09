@@ -461,7 +461,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
 
 # **नया फंक्शन:** जब बॉट ग्रुप से बाहर निकलता है तो लॉग करता है
-@client.on_message(filters.left_chat_members)
+@client.on_message(filters.left_chat_member)
 async def log_left_member(client: Client, message: Message):
     chat = message.chat
     left_members = message.left_chat_members
