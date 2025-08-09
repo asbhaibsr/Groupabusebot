@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
+# Assuming profanity_filter.py is in the same directory and has a working ProfanityFilter class
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
@@ -584,6 +585,7 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         logger.error("Profanity filter not initialized, cannot add abuse word.")
 
 
+# CHANGED: new_chat_members handler for better logging
 @client.on_message(filters.new_chat_members)
 async def welcome_new_member(client: Client, message: Message) -> None:
     new_members = message.new_chat_members
@@ -628,6 +630,18 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
         else:
+            # New user joined, log this event
+            log_message = (
+                f"<b>🆕 New Member Joined:</b>\n"
+                f"Group: <code>{chat.title}</code>\n"
+                f"Group ID: <code>{chat.id}</code>\n"
+                f"User: {member.mention} (`{member.id}`)\n"
+                f"Username: @{member.username if member.username else 'N/A'}\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+            )
+            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+            logger.info(f"New member {member.id} joined group {chat.id}.")
+
             try:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
@@ -690,13 +704,14 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
 
+# CHANGED: left_chat_member handler with improved logging
 @client.on_message(filters.left_chat_member)
 async def left_member_handler(client: Client, message: Message) -> None:
     left_member = message.left_chat_member
     bot_info = await client.get_me()
+    chat = message.chat
 
     if left_member and left_member.id == bot_info.id:
-        chat = message.chat
         log_message = (
             f"<b>❌ Bot Left Group:</b>\n"
             f"Group Name: <code>{chat.title}</code>\n"
@@ -706,6 +721,18 @@ async def left_member_handler(client: Client, message: Message) -> None:
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Bot was removed from group: {chat.title} ({chat.id}) by {message.from_user.id}.")
+    else:
+        # A user left the group, log this event
+        log_message = (
+            f"<b>➡️ Member Left:</b>\n"
+            f"Group: <code>{chat.title}</code>\n"
+            f"Group ID: <code>{chat.id}</code>\n"
+            f"User: {left_member.mention} (`{left_member.id}`)\n"
+            f"Username: @{left_member.username if left_member.username else 'N/A'}\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        )
+        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+        logger.info(f"Member {left_member.id} left group {chat.id}.")
 
 # --- Tagging Commands ---
 @client.on_message(filters.command("tagall") & filters.group)
@@ -1606,7 +1633,6 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
             ],
             [
-                InlineKeyboardButton("🗑️ Close", callback_data="close")
             ]
         ]
 
@@ -1616,42 +1642,89 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         except MessageNotModified:
             pass
 
-    elif data == "confirm_broadcast":
-        admin_id = query.from_user.id
-        message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
-        if not message_to_broadcast:
-            await query.message.edit_text("Broadcast message not found. Please try again.")
-            return
+# CHANGED: Broadcast logic to send to both users and groups with flood control
+@client.on_callback_query(filters.regex("confirm_broadcast"))
+async def handle_confirm_broadcast(client: Client, query: CallbackQuery) -> None:
+    admin_id = query.from_user.id
+    message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
 
+    if not message_to_broadcast:
+        await query.message.edit_text("Broadcast message not found. Please try again.")
+        return
+
+    try:
+        await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
+    except MessageNotModified:
+        pass
+
+    if db is None:
+        await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
+        return
+
+    # Get a list of both groups and users from the database
+    all_chats = []
+    if db.groups is not None:
         try:
-            await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
-        except MessageNotModified:
-            pass
+            groups = db.groups.find({})
+            for group in groups:
+                all_chats.append(group.get("chat_id"))
+        except Exception as e:
+            logger.error(f"Error fetching groups from DB for broadcast: {e}")
 
-        if db is None or db.groups is None:
-            await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
-            return
+    if db.users is not None:
+        try:
+            users = db.users.find({})
+            for user in users:
+                all_chats.append(user.get("user_id"))
+        except Exception as e:
+            logger.error(f"Error fetching users from DB for broadcast: {e}")
 
-        groups_list = db.groups.find({})
-        success_count = 0
-        fail_count = 0
+    success_count = 0
+    fail_count = 0
+    total_chats = len(all_chats)
 
-        for group in groups_list:
-            chat_id = group.get("chat_id")
-            if chat_id:
-                try:
-                    await client.copy_message(chat_id, message_to_broadcast.chat.id, message_to_broadcast.id)
-                    success_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to broadcast to group {chat_id}: {e}")
-                    fail_count += 1
+    for i, chat_id in enumerate(all_chats):
+        try:
+            await client.copy_message(
+                chat_id=chat_id,
+                from_chat_id=message_to_broadcast.chat.id,
+                message_id=message_to_broadcast.id
+            )
+            success_count += 1
+        except FloodWait as e:
+            logger.warning(f"Broadcast: FloodWait error. Sleeping for {e.value} seconds.")
+            await asyncio.sleep(e.value)
+            # Retry sending the message after the wait
+            try:
+                await client.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=message_to_broadcast.chat.id,
+                    message_id=message_to_broadcast.id
+                )
+                success_count += 1
+            except Exception as e_retry:
+                logger.error(f"Broadcast retry failed for {chat_id}: {e_retry}")
+                fail_count += 1
+        except Exception as e:
+            logger.error(f"Failed to broadcast to chat {chat_id}: {e}")
+            fail_count += 1
+        
+        # Update progress for every 10 messages
+        if (i + 1) % 10 == 0 or (i + 1) == total_chats:
+            try:
+                await query.message.edit_text(f"📢 Broadcast चल रहा है...\n\nसफलतापूर्वक भेजा गया: {success_count}/{total_chats}\nविफल: {fail_count}/{total_chats}", parse_mode=enums.ParseMode.HTML)
+            except MessageNotModified:
+                pass
 
-        report_text = f"✅ Broadcast पूरा हुआ!\n\nसफलतापूर्वक भेजा गया: {success_count} समूहों में\nविफल: {fail_count} समूहों में"
-        await query.message.reply_text(report_text)
-        BROADCAST_MESSAGE.pop(admin_id)
-        logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} groups.")
+    report_text = f"✅ Broadcast पूरा हुआ!\n\nसफलतापूर्वक भेजा गया: {success_count} चैट में\nविफल: {fail_count} चैट में"
+    try:
+        await query.message.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
+    except MessageNotModified:
+        pass
+    BROADCAST_MESSAGE.pop(admin_id, None)
+    logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} chats.")
 
-    elif data == "cancel_broadcast":
+elif data == "cancel_broadcast":
         await query.message.edit_text("Broadcast cancelled.")
         user_id = query.from_user.id
         if BROADCAST_MESSAGE.get(user_id):
@@ -1682,3 +1755,4 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped")
+
