@@ -1,120 +1,95 @@
-<h1 align="center">🚫 Group Abuse Filter Bot 🚫</h1>
+<div align="center">
+  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=35&pause=1000&color=91FF00&random=false&width=435&lines=✨+AS+GROUP+GUARDIAN+ROBOT+✨" alt="Typing SVG" />
+</div>
 
-<p align="center"><i>Clean your Telegram groups automatically using smart word filters and admin tools.</i></p>
+<div align="center">
+  <a href="https://github.com/asbhaibsr/as-group-guardian">
+    <img src="https://img.shields.io/github/stars/asbhaibsr/as-group-guardian?style=social">
+  </a>
+  <a href="https://github.com/asbhaibsr/as-group-guardian/fork">
+    <img src="https://img.shields.io/github/forks/asbhaibsr/as-group-guardian?style=social">
+  </a>
+</div>
 
-<p align="center">
-  <a href="https://t.me/asbhaibsr">
-    <img src="https://img.shields.io/badge/👤 Owner-%40asbhaibsr-blue?style=for-the-badge&logo=telegram" />
+---
+
+### **💖 Dosto, Aapka Swagat Hai AS Group Guardian Robot Mein! 💖**
+
+<div align="center">
+  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=20&pause=1000&color=91FF00&random=false&width=450&lines=Group+Ko+Safe+Rakho+Or+Enjoy+Karo!+😊" alt="Typing SVG" />
+</div>
+
+**AS Group Guardian** ek advanced aur powerful Telegram moderation bot hai, jo aapke groups ko **spam**, **abusive content**, aur **unwanted links** se protect karta hai. Iska main mission aapke group mein ek clean aur friendly environment maintain karna hai.
+
+---
+
+### **✨ Features (Bot Ki Khaas Baatein)**
+
+Is bot ke kuch amazing aur unique features yahan diye gaye hain:
+
+* **`🚫 Abusive & Spam Filter:`**
+  > Yeh bot group mein istemal hone wale gande shabdon aur spam messages ko automatically detect aur delete kar deta hai.
+
+* **`🔗 Bio-Link Protection:`**
+  > Jab koi naya member join karta hai, toh bot uske bio ko check karta hai. Agar wahan koi link hota hai, toh bot use **warn**, **mute** ya **ban** kar sakta hai.
+
+* **`✏️ Edited Message Deleter:`**
+  > Non-admin users ke dwara kiye gaye edited messages ko bot turant delete kar deta hai. Isse users rules ko cheat karne se rukte hain.
+
+* **`⚠️ Advanced Warning System:`**
+  > Bot users ko warnings deta hai, aur jab warnings ki limit cross ho jaati hai, toh bot un par automatic action leta hai (jaise ki **mute** ya **ban**).
+
+* **`✅ Whitelist System:`**
+  > Aap kuch trusted members ko whitelist kar sakte hain, jin par bot ke rules apply nahi honge.
+
+* **`📢 Smart Member Tagging:`**
+  > Commands jaise ki `/tagall`, `/onlinetag`, aur `/admin` ki madad se aap group ke sabhi members ya sirf admins ko ek message ke saath tag kar sakte hain.
+
+* **`📝 In-depth Incident Logging:`**
+  > Bot sabhi violations, jaise ki warnings, deleted messages, aur bans, ko ek dedicated log channel mein record karta hai.
+
+---
+
+### **🤖 Bot Demo**
+
+<div align="center">
+  <a href="https://t.me/asGroupGuardianRobot">
+    <img src="https://img.shields.io/badge/Bot%20Demo-@asGroupGuardianRobot-blue?style=for-the-badge&logo=telegram">
   </a>
   <a href="https://t.me/asbhai_bsr">
-    <img src="https://img.shields.io/badge/📢 Updates-%40asbhai__bsr-orange?style=for-the-badge&logo=telegram" />
+    <img src="https://img.shields.io/badge/Updates-@asbhai_bsr-red?style=for-the-badge&logo=telegram">
   </a>
-</p>
-
----
-
-## ✨ Features
-
-- ✅ Auto-detect and delete abusive messages
-- 🔐 Real-time monitoring of group chats
-- 🧠 Works with MongoDB + Logging system
-- ☁️ Deployable on Koyeb, Render, Railway
-- 👑 Admin-only commands for full control
-
----
-
-## 🚀 Deploy to Koyeb
-
-1. **Fork this repo**
-2. Go to [Koyeb Dashboard](https://app.koyeb.com/)
-3. Click "Create App"
-4. Connect GitHub and select your repo
-5. Set build type as `Python`
-6. Add the following environment variables:
-
-```
-TELEGRAM_BOT_TOKEN=your_bot_token
-MONGO_DB_URI=your_mongodb_connection
-GROUP_ADMIN_USERNAME=your_admin_username
-```
-
-7. Click **Deploy** — done! 🚀
-
----
-
-## 🛠 Manual Setup (Local)
-
-```bash
-git clone https://github.com/yourusername/Groupabusebot.git
-cd Groupabusebot
-pip install -r requirements.txt
-```
-
-Edit your token inside `main.py` or use environment variables.
-
-Then run:
-
-```bash
-python main.py
-```
-
----
-
-## 💬 Admin Commands
-
-> Only allowed for users listed in `ADMIN_USER_IDS` inside `main.py`
-
-```
-/start              - Check if bot is working
-/help               - Show help message
-/stats              - View bot stats
-/broadcast <msg>    - Send a message to all users
-/addabuse <word>    - Add abusive word to blocklist
-/delabuse <word>    - Remove a word from blocklist
-/listabuse          - Show current blocked words
-```
-
----
-
-## 📦 Logs & Case Handling
-
-| Type        | Sent To           | Description |
-|-------------|-------------------|-------------|
-| Logs        | `LOG_CHANNEL_ID`  | All general bot actions |
-| Abuse Cases | `CASE_CHANNEL_ID` | Messages with abuse |
-| Warning     | In Group Chat     | User warned, message deleted |
-| Admin Ping  | In Group          | Admin mentioned if needed |
-
-You can configure all IDs inside `main.py` or through Koyeb env variables.
-
----
-
-## 🧾 File Structure
-
-| File                | Description                          |
-|---------------------|--------------------------------------|
-| `main.py`           | Main bot logic                       |
-| `profanity_filter.py` | Words list and filter logic        |
-| `requirements.txt`  | Python dependencies                  |
-| `.env` (optional)   | Store secrets for local dev or Koyeb |
-
----
-
-## 🙋‍♂️ Contact & Support
-
-<p align="center">
   <a href="https://t.me/asbhaibsr">
-    <img src="https://img.shields.io/badge/👨‍💻 Contact-%40asbhaibsr-blue?style=for-the-badge&logo=telegram" />
+    <img src="https://img.shields.io/badge/Owner-@asbhaibsr-red?style=for-the-badge&logo=telegram">
   </a>
-  <a href="https://t.me/asbhai_bsr">
-    <img src="https://img.shields.io/badge/📢 Update+Channel-%40asbhai__bsr-orange?style=for-the-badge&logo=telegram" />
-  </a>
-</p>
+</div>
 
 ---
 
-## ⭐️ Like This Project?
+### **🚀 Commands (Bot Ko Kaise Use Karein)**
 
-Star the repo, share with friends, or contribute!
+Yahan bot ke kuch important commands ki list di gayi hai:
 
-> Made with ❤️ by [@asbhaibsr](https://t.me/asbhaibsr)
+* **`/start`** - Bot ke baare mein basic jankari shuru karein.
+* **`/help`** - Saare commands aur unke istemal ka tarika jaaniye.
+* **`/config`** - Bio-link protection aur warning settings ko customize karein.
+* **`/free`** - Kisi user ko whitelist karein.
+* **`/unfree`** - Kisi user ko whitelist se remove karein.
+* **`/freelist`** - Saare whitelisted users ki list dekhein.
+* **`/stats`** - Bot ke usage stats dekhein (sirf bot admins ke liye).
+* **`/checkperms`** - Group mein bot ki permissions check karein.
+* **`/tagall <message>`** - Saare group members ko tag karein.
+* **`/onlinetag <message>`** - Sirf online members ko tag karein.
+* **`/admin <message>`** - Sirf group admins ko tag karein.
+* **`/tagstop`** - Sabhi ongoing tagging messages ko delete karein.
+
+---
+
+### **⚙️ Deployment (Aap Khud Bot Banayein)**
+
+Agar aap is bot ko khud deploy karna chahte hain, toh aap is repository ko `fork` karke apne environment mein chala sakte hain. Deployment ke liye, aap **Koyeb** ya koi bhi doosra hosting platform use kar sakte hain.
+
+> **`Fork`** karne se pehle is repository ko **`Star`** dena na bhulein! ✨
+
+**Required Environment Variables (`.env`)**
+
