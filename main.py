@@ -114,7 +114,6 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
         logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
         return False
 
-# Naya log channel function jo robust hai
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID with better error handling."""
     if not LOG_CHANNEL_ID:
@@ -122,8 +121,6 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
         return
     
     try:
-        # Check if the bot can send messages to the log channel
-        await client.get_chat(LOG_CHANNEL_ID)
         await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
     except Forbidden:
         logger.error(f"Bot does not have permissions to send messages to log channel {LOG_CHANNEL_ID}.")
@@ -238,7 +235,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
         
-        # Log message ko behtar banaya gaya hai
         log_message = (
             f"🚨 <b>Incident Detected</b> 🚨\n\n"
             f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
@@ -262,9 +258,7 @@ async def start(client: Client, message: Message) -> None:
     bot_username = bot_info.username
     add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
-    # Private mein /start command ka naya code
     if chat.type == enums.ChatType.PRIVATE:
-        # User ke mention ke saath namaste message.
         welcome_message = (
             f"👋 <b>Namaste {user.mention}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -279,7 +273,6 @@ async def start(client: Client, message: Message) -> None:
             f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
         )
 
-        # Naye buttons aur 'add me to group' button sabse upar
         keyboard = [
             [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
@@ -306,8 +299,6 @@ async def start(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error saving user {user.id} to DB (from start command): {e}")
 
-        # >>> START OF CHANGE
-        # Private mein /start command par log channel mein jankari bhejna
         log_message = (
             f"<b>✨ New User Started Bot:</b>\n"
             f"User: {user.mention} (`{user.id}`)\n"
@@ -315,7 +306,6 @@ async def start(client: Client, message: Message) -> None:
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
-        # <<< END OF CHANGE
 
     elif chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         try:
@@ -429,7 +419,6 @@ async def command_free(client: Client, message: Message):
     add_whitelist_sync(chat_id, target.id)
     reset_warnings_sync(chat_id, target.id)
 
-    # Whitelist par mention ka code
     full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
     mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
     text = f"<b>✅ {mention} has been added to the whitelist</b>"
@@ -463,7 +452,6 @@ async def command_unfree(client: Client, message: Message):
     if not target:
         return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
 
-    # Unwhitelist par mention ka code
     full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
     mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
 
@@ -604,7 +592,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
 
     for member in new_members:
         if member.id == bot_info.id:
-            # >>> START OF CHANGE
             log_message = (
                 f"<b>🤖 Bot Joined Group:</b>\n"
                 f"Group Name: <code>{chat.title}</code>\n"
@@ -614,7 +601,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
             await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
-            # <<< END OF CHANGE
             logger.info(f"Bot joined group: {chat.title} ({chat.id}) added by {message.from_user.id}.")
 
             if db is not None and db.groups is not None:
@@ -645,7 +631,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             try:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
-                # THIS IS THE CHANGE YOU ASKED FOR - NO LOGGING FOR BIO-LINK DETECTIONS
                 if URL_PATTERN.search(bio):
                     await message.delete()
 
@@ -705,8 +690,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
 
-# >>> START OF CHANGE
-# Bot ke group se nikalne par log karne ka naya handler
 @client.on_message(filters.left_chat_member)
 async def left_member_handler(client: Client, message: Message) -> None:
     left_member = message.left_chat_member
@@ -723,7 +706,6 @@ async def left_member_handler(client: Client, message: Message) -> None:
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Bot was removed from group: {chat.title} ({chat.id}) by {message.from_user.id}.")
-# <<< END OF CHANGE
 
 # --- Tagging Commands ---
 @client.on_message(filters.command("tagall") & filters.group)
@@ -738,7 +720,6 @@ async def tag_all(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    # Message jo tag ke saath jayega
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
     
     try:
@@ -746,7 +727,7 @@ async def tag_all(client: Client, message: Message) -> None:
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
                 emoji = random.choice(EMOJIS)
-                members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
+                members_to_tag.append(member.user.mention(emoji))
 
         if not members_to_tag:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
@@ -841,7 +822,7 @@ async def online_tag(client: Client, message: Message) -> None:
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot and member.user.status in [enums.UserStatus.ONLINE, enums.UserStatus.RECENTLY]:
                 emoji = random.choice(EMOJIS)
-                online_members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
+                online_members_to_tag.append(member.user.mention(emoji))
 
         if not online_members_to_tag:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
@@ -1104,7 +1085,6 @@ async def check_and_delete_biolink(client: Client, message: Message):
                     try:
                         sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
                         
-                        # LOGGING REMOVED - THIS IS THE CHANGE YOU ASKED FOR
                     except Exception as e:
                         logger.error(f"Error sending bio-link warning: {e}")
                         return True
@@ -1159,8 +1139,6 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     if is_sender_admin or is_whitelisted_sync(chat.id, user.id):
         return
     
-    # THIS IS THE CHANGE YOU ASKED FOR - NEW NOTIFICATION FOR EDITED MESSAGES
-    # If a message is edited, delete it and send a specific notification.
     await handle_incident(client, chat.id, user, "Edited message deleted", edited_message, "edited_message_deleted")
 
 # --- Callback Query Handlers ---
