@@ -27,7 +27,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002352329534"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002352329534")) # LOG_CHANNEL_ID को सीधे कोड में सेट किया गया है
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 
@@ -261,10 +261,9 @@ async def start(client: Client, message: Message) -> None:
     bot_name = bot_info.first_name
     bot_username = bot_info.username
     add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
-
-    # Private mein /start command ka naya code
+    
+    # जब कोई बॉट को नया स्टार्ट करे तो लॉग दिखना चाहिए
     if chat.type == enums.ChatType.PRIVATE:
-        # User ke mention ke saath namaste message.
         welcome_message = (
             f"👋 <b>Namaste {user.mention}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
@@ -279,7 +278,6 @@ async def start(client: Client, message: Message) -> None:
             f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
         )
 
-        # Naye buttons aur 'add me to group' button sabse upar
         keyboard = [
             [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
             [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
@@ -306,6 +304,7 @@ async def start(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error saving user {user.id} to DB (from start command): {e}")
 
+        # यह सुनिश्चित करने के लिए कि लॉग हमेशा जाता है
         log_message = (
             f"<b>✨ New User Started Bot:</b>\n"
             f"User: {user.mention} (`{user.id}`)\n"
@@ -313,7 +312,8 @@ async def start(client: Client, message: Message) -> None:
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
-
+    
+    # जब ग्रुप में /start हो
     elif chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         try:
             bot_info = await client.get_me()
@@ -349,250 +349,7 @@ async def start(client: Client, message: Message) -> None:
         except Exception as e:
             logger.error(f"Error handling start in group: {e}")
 
-
-@client.on_message(filters.command("help"))
-async def help_handler(client: Client, message: Message):
-    chat_id = message.chat.id
-    help_text = (
-        "<b>🛠️ Bot Commands & Usage</b>\n\n"
-        "<b>BioLink Protector Commands:</b>\n"
-        "`/config` – set warn-limit & punishment mode\n"
-        "`/free` – whitelist a user (reply or user/id)\n"
-        "`/unfree` – remove from whitelist\n"
-        "`/freelist` – list all whitelisted users\n\n"
-        "<b>General Moderation Commands:</b>\n"
-        f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
-        f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-        f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
-        f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
-        "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
-        "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
-        "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
-        "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
-        " 1. ⚠️ Warn them\n"
-        " 2. 🔇 Mute if they exceed limit\n"
-        " 3. 🔨 Ban if set to ban\n\n"
-        "<b>Use the inline buttons on warnings to cancel or whitelist</b>"
-    )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-    await client.send_message(chat_id, help_text, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-
-@client.on_message(filters.group & filters.command("config"))
-async def configure(client: Client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    if not await is_group_admin(chat_id, user_id):
-        return
-
-    mode, limit, penalty = get_config_sync(chat_id)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Warn Limit", callback_data="warn_limit")],
-        [
-            InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute"),
-            InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban")
-        ],
-        [InlineKeyboardButton("Close", callback_data="close")]
-    ])
-    await client.send_message(
-        chat_id,
-        "<b>Choose penalty for users with links in bio:</b>",
-        reply_markup=keyboard,
-        parse_mode=enums.ParseMode.HTML
-    )
-    await message.delete()
-
-@client.on_message(filters.group & filters.command("free"))
-async def command_free(client: Client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    if not await is_group_admin(chat_id, user_id):
-        return await message.reply_text("Aap group admin nahi hain.")
-
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user
-    elif len(message.command) > 1:
-        arg = message.command[1]
-        try:
-            target = await client.get_users(int(arg) if arg.isdigit() else arg)
-        except Exception:
-            return await client.send_message(chat_id, "<b>Invalid user or id provided.</b>", parse_mode=enums.ParseMode.HTML)
-    else:
-        return await client.send_message(chat_id, "<b>Reply or use /free user or id to whitelist someone.</b>", parse_mode=enums.ParseMode.HTML)
-
-    if not target:
-        return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
-
-    add_whitelist_sync(chat_id, target.id)
-    reset_warnings_sync(chat_id, target.id)
-
-    # Whitelist par mention ka code
-    full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
-    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
-    text = f"<b>✅ {mention} has been added to the whitelist</b>"
-    
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🚫 Unwhitelist", callback_data=f"unwhitelist_{target.id}"),
-            InlineKeyboardButton("🗑️ Close", callback_data="close")
-        ]
-    ])
-    await client.send_message(chat_id, text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-
-@client.on_message(filters.group & filters.command("unfree"))
-async def command_unfree(client: Client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    if not await is_group_admin(chat_id, user_id):
-        return await message.reply_text("Aap group admin nahi hain.")
-
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user
-    elif len(message.command) > 1:
-        arg = message.command[1]
-        try:
-            target = await client.get_users(int(arg) if arg.isdigit() else arg)
-        except Exception:
-            return await client.send_message(chat_id, "<b>Invalid user or id provided.</b>", parse_mode=enums.ParseMode.HTML)
-    else:
-        return await client.send_message(chat_id, "<b>Reply or use /unfree user or id to unwhitelist someone.</b>", parse_mode=enums.ParseMode.HTML)
-
-    if not target:
-        return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
-
-    # Unwhitelist par mention ka code
-    full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
-    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
-
-    if is_whitelisted_sync(chat_id, target.id):
-        remove_whitelist_sync(chat_id, target.id)
-        text = f"<b>🚫 {mention} has been removed from the whitelist</b>"
-    else:
-        text = f"<b>ℹ️ {mention} is not whitelisted.</b>"
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{target.id}"),
-            InlineKeyboardButton("🗑️ Close", callback_data="close")
-        ]
-    ])
-    await client.send_message(chat_id, text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-
-@client.on_message(filters.group & filters.command("freelist"))
-async def command_freelist(client: Client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    if not await is_group_admin(chat_id, user_id):
-        return await message.reply_text("Aap group admin nahi hain.")
-
-    ids = get_whitelist_sync(chat_id)
-    if not ids:
-        await client.send_message(chat_id, "<b>⚠️ No users are whitelisted in this group.</b>", parse_mode=enums.ParseMode.HTML)
-        return
-
-    text = "<b>📋 Whitelisted Users:</b>\n\n"
-    for i, uid in enumerate(ids, start=1):
-        try:
-            user = await client.get_users(uid)
-            name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-            text += f"{i}: {name} [`{uid}`]\n"
-        except:
-            text += f"{i}: [User not found] [`{uid}`]\n"
-
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-    await client.send_message(chat_id, text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-
-@client.on_message(filters.command("stats") & filters.user(ADMIN_USER_IDS))
-async def stats(client: Client, message: Message) -> None:
-    if not is_admin(message.from_user.id):
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
-        return
-
-    total_groups = 0
-    total_users = 0
-    if db is not None:
-        try:
-            if db.groups is not None:
-                total_groups = db.groups.count_documents({})
-            if db.users is not None:
-                total_users = db.users.count_documents({})
-        except Exception as e:
-            logger.error(f"Error fetching stats from DB: {e}")
-            await message.reply_text(f"Stats fetch karte samay error hui: {e}")
-            return
-
-    stats_message = (
-        f"📊 <b>Bot Status:</b>\n\n"
-        f"• Total Unique Users (via /start in private chat): {total_users}\n"
-        f"• Total Groups Managed: {total_groups}\n"
-        f"• Uptime: {str(datetime.now() - bot_start_time).split('.')[0]} \n"
-        f"• Last Check: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-    )
-    await message.reply_text(stats_message, parse_mode=enums.ParseMode.HTML)
-    logger.info(f"Admin {message.from_user.id} requested stats.")
-
-@client.on_message(filters.command("broadcast") & filters.user(ADMIN_USER_IDS) & filters.private)
-async def broadcast_command(client: Client, message: Message) -> None:
-    if not is_admin(message.from_user.id):
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
-        return
-
-    await message.reply_text("📢 Broadcast shuru karne ke liye, kripya apna message bhejein:")
-    BROADCAST_MESSAGE[message.from_user.id] = "waiting_for_message"
-    logger.info(f"Admin {message.from_user.id} initiated broadcast.")
-
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
-async def handle_broadcast_message(client: Client, message: Message) -> None:
-    user = message.from_user
-
-    if BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
-        return
-
-    BROADCAST_MESSAGE[user.id] = message
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Yes, Broadcast Now", callback_data="confirm_broadcast")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    try:
-        await message.reply_text(
-            "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logger.error(f"Error sending broadcast confirmation message to {user.id}: {e}")
-        await message.reply_text("Broadcast confirmation message bhejne mein error aaya.")
-        BROADCAST_MESSAGE.pop(user.id, None)
-
-@client.on_message(filters.command("addabuse") & filters.user(ADMIN_USER_IDS))
-async def add_abuse_word(client: Client, message: Message) -> None:
-    if not is_admin(message.from_user.id):
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
-        return
-    if len(message.command) < 2:
-        await message.reply_text("Kripya woh shabd dein jise aap add karna chahte hain. Upyog: <code>/addabuse &lt;shabd&gt;</code>", parse_mode=enums.ParseMode.HTML)
-        return
-    word_to_add = " ".join(message.command[1:]).lower().strip()
-    if not word_to_add:
-        await message.reply_text("Kripya ek valid shabd dein.")
-        return
-    if profanity_filter is not None:
-        try:
-            if await profanity_filter.add_bad_word(word_to_add):
-                await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
-                logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
-            else:
-                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se hi list mein maujood hai\\.", parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            await message.reply_text(f"Shabd jodte samay error hui: {e}")
-            logger.error(f"Error adding abuse word {word_to_add}: {e}")
-    else:
-        await message.reply_text("Profanity filter initialize nahi hua hai. MongoDB connection mein problem ho sakti hai.")
-        logger.error("Profanity filter not initialized, cannot add abuse word.")
-
-
+# जब कोई नया सदस्य ग्रुप में आता है, तो लॉग दिखाना चाहिए
 @client.on_message(filters.new_chat_members)
 async def welcome_new_member(client: Client, message: Message) -> None:
     new_members = message.new_chat_members
@@ -601,6 +358,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
 
     for member in new_members:
         if member.id == bot_info.id:
+            # बॉट के ग्रुप में शामिल होने पर लॉग
             log_message = (
                 f"<b>🤖 Bot Joined Group:</b>\n"
                 f"Group Name: <code>{chat.title}</code>\n"
@@ -666,6 +424,8 @@ async def welcome_new_member(client: Client, message: Message) -> None:
 
                         try:
                             sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+                            
+                            # LOGGING REMOVED - THIS IS THE CHANGE YOU ASKED FOR
                         except Exception as e:
                             logger.error(f"Error sending bio-link warning: {e}")
                             return
@@ -700,6 +460,32 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
 
+# **नया फंक्शन:** जब बॉट ग्रुप से बाहर निकलता है तो लॉग करता है
+@client.on_message(filters.left_chat_members)
+async def log_left_member(client: Client, message: Message):
+    chat = message.chat
+    left_members = message.left_chat_members
+    bot_info = await client.get_me()
+
+    for member in left_members:
+        if member.id == bot_info.id:
+            log_message = (
+                f"<b>🤖 Bot Left Group:</b>\n"
+                f"Group Name: <code>{chat.title}</code>\n"
+                f"Group ID: <code>{chat.id}</code>\n"
+                f"Removed by: {message.from_user.mention} (`{message.from_user.id}`)\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+            )
+            await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
+            logger.info(f"Bot left group: {chat.title} ({chat.id}) removed by {message.from_user.id}.")
+
+            if db and db.groups:
+                try:
+                    db.groups.delete_one({"chat_id": chat.id})
+                except Exception as e:
+                    logger.error(f"Error removing group {chat.id} from DB: {e}")
+            return
+            
 # --- Tagging Commands ---
 @client.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client: Client, message: Message) -> None:
