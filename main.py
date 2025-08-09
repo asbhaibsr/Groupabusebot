@@ -1503,7 +1503,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         except Exception as e:
             try:
-                await query.edit_message_text(f"Mute करते समय error हुई: {e}")
+                await query.edit_message_text(f"Mute karte samay error hui: {e}")
             except MessageNotModified:
                 pass
             logger.error(f"Error muting user {target_user_id} in {group_chat_id}: {e}")
