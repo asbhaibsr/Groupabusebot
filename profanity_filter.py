@@ -200,3 +200,14 @@ class ProfanityFilter:
             if re.search(r'\b' + re.escape(word) + r'\b', text):
                 return True
         return False
+    
+    def find_profanity(self, text: str) -> str | None:
+        """Finds the first profanity word in the text and returns it, otherwise None."""
+        if not text:
+            return None
+        text = text.lower()
+        for word in self.bad_words:
+            # Use word boundaries to match whole words
+            if re.search(r'\b' + re.escape(word) + r'\b', text):
+                return word
+        return None
