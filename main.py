@@ -92,6 +92,7 @@ def init_mongodb():
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
+        asyncio.run(profanity_filter.init_async_db())  # Call the async init method
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB or initialize collections: {e}.")
@@ -582,6 +583,7 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         return
     if profanity_filter is not None:
         try:
+            # Await the async method call
             if await profanity_filter.add_bad_word(word_to_add):
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
