@@ -28,7 +28,13 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002352329534"))
+LOG_CHANNEL_ID_STR = os.getenv("LOG_CHANNEL_ID", "-1002352329534")
+try:
+    LOG_CHANNEL_ID = int(LOG_CHANNEL_ID_STR)
+except (ValueError, TypeError):
+    LOG_CHANNEL_ID = None
+    logging.warning("LOG_CHANNEL_ID is not a valid integer. Logging to channel will be disabled.")
+
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 
@@ -219,16 +225,14 @@ def reset_warnings_sync(chat_id, user_id):
 # User profile button ko hatakar code ko badla gaya hai
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
-    user_mention = user.mention
+    full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
+    user_mention_text = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
     try:
         await client.delete_messages(chat_id=chat_id, message_ids=original_message_id)
         logger.info(f"Deleted {reason} message from {user.username or user.mention} ({user.id}) in {chat_id}.")
     except Exception as e:
         logger.error(f"Error deleting message in {chat_id}: {e}. Make sure the bot has 'Delete Messages' admin permission.")
-
-    full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-    user_mention_text = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
     # THIS IS THE EDITED MESSAGE NOTIFICATION
     if case_type == "edited_message_deleted":
@@ -242,9 +246,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
          notification_text = (
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
-            f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
-            # CHANGED: 'abuse' now in spoiler text
-            f"Your word: ||{original_message.text}||"
+            f"You used an abusive word: ||{original_message.text}||"
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
     else:
@@ -909,7 +911,7 @@ async def tag_all(client: Client, message: Message) -> None:
         logger.error(f"Error in /tagall command: {e}")
         await message.reply_text(f"टैग करते समय error हुई: {e}")
         if chat_id in ONGOING_TAGGING_TASKS:
-            ONGOING_TAGGING_TASKS.pop(chat_id)
+            ONGOING_TAGGING_TASks.pop(chat_id)
 
 @client.on_message(filters.command("onlinetag") & filters.group)
 async def online_tag(client: Client, message: Message) -> None:
