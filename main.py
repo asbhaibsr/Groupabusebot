@@ -268,16 +268,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             parse_mode=enums.ParseMode.HTML
         )
         logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
-        
-        log_message = (
-            f"🚨 <b>Incident Detected</b> 🚨\n\n"
-            f"<b>Group:</b> {original_message.chat.title} (`{chat_id}`)\n"
-            f"<b>User:</b> {user.mention} (`{user.id}`)\n"
-            f"<b>Reason:</b> {reason}\n"
-            f"<b>Case Type:</b> {case_type}\n"
-            f"<b>Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-        )
-        await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
 
     except Exception as e:
         logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
@@ -1489,7 +1479,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     elif data == "other_bots":
         other_bots_text = (
             "<b>Mere kuch aur bots:</b>\n\n"
-            "• <b>Movies & Webseries:</b> <a href='https://t.me/asfilter_bot'>@asfilter_bot</a>\n"
+            "• <b>Movies & Webseries:</b> <a href='https://t.me/asflter_bot'>@asflter_bot</a>\n"
             "  <i>Ye hai sabhi movies, webseries, anime, Korean drama, aur sabhi TV show sabhi languages mein yahan milte hain.</i>\n\n"
             "• <b>Chat Bot:</b> <a href='https://t.me/askiangelbot'>@askiangelbot</a>\n"
             "  <i>Ye bot group par chat karti hai aur isme acche acche group manage karne ke liye commands hain.</i>\n"
