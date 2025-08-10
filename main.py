@@ -91,7 +91,10 @@ def init_mongodb():
         db.whitelist.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
-
+        
+        # New: `settings` collection to store group settings
+        db.settings.create_index("chat_id", unique=True)
+        
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
@@ -145,6 +148,36 @@ def update_config_sync(chat_id, mode=None, limit=None, penalty=None):
     if limit is not None: update_doc["limit"] = limit
     if penalty: update_doc["penalty"] = penalty
     db.config.update_one({"chat_id": chat_id}, {"$set": update_doc}, upsert=True)
+
+# New: Get group settings from DB
+def get_group_settings(chat_id):
+    if db is None:
+        return {
+            "delete_biolink": True,
+            "delete_abuse": True,
+            "delete_edited": True
+        }
+    settings = db.settings.find_one({"chat_id": chat_id})
+    if not settings:
+        # Default settings if not found
+        default_settings = {
+            "chat_id": chat_id,
+            "delete_biolink": True,
+            "delete_abuse": True,
+            "delete_edited": True
+        }
+        db.settings.insert_one(default_settings)
+        return default_settings
+    return settings
+
+# New: Update group settings in DB
+def update_group_setting(chat_id, setting_key, setting_value):
+    if db is None: return
+    db.settings.update_one(
+        {"chat_id": chat_id},
+        {"$set": {setting_key: setting_value}},
+        upsert=True
+    )
 
 def is_whitelisted_sync(chat_id, user_id):
     if db is None: return False
@@ -315,14 +348,20 @@ async def start(client: Client, message: Message) -> None:
             add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
             if await is_group_admin(chat.id, bot_info.id):
+                # ADDED: Settings button for group start message
                 group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun, aapka group moderation bot. Main aapke group ko saaf suthra rakhne mein madad karunga."
+                group_keyboard = [
+                    [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
+                    [InlineKeyboardButton("🔧 Bot Settings", callback_data="show_settings_menu")],
+                    [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
+                ]
             else:
                 group_start_message = f"Hello! Main <b>{bot_info.first_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
-
-            group_keyboard = [
-                [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
-                [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
-            ]
+                group_keyboard = [
+                    [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
+                    [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
+                ]
+            
             reply_markup = InlineKeyboardMarkup(group_keyboard)
 
             await message.reply_text(
@@ -355,6 +394,7 @@ async def help_handler(client: Client, message: Message):
         "`/unfree` – remove from whitelist\n"
         "`/freelist` – list all whitelisted users\n\n"
         "<b>General Moderation Commands:</b>\n"
+        f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n" # ADDED: New settings command
         f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
         f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
         f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
@@ -371,6 +411,43 @@ async def help_handler(client: Client, message: Message):
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ Close", callback_data="close")]])
     await client.send_message(chat_id, help_text, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+# ADDED: New settings command handler
+@client.on_message(filters.group & filters.command("settings"))
+async def settings_command_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    if not await is_group_admin(chat_id, user_id):
+        await message.reply_text("Aap group admin nahi hain, is command ka upyog nahi kar sakte.")
+        return
+
+    await show_settings_menu(client, message)
+
+async def show_settings_menu(client, message):
+    chat_id = message.chat.id
+    settings = get_group_settings(chat_id)
+    
+    biolink_status = "✅ On" if settings.get("delete_biolink", True) else "❌ Off"
+    abuse_status = "✅ On" if settings.get("delete_abuse", True) else "❌ Off"
+    edited_status = "✅ On" if settings.get("delete_edited", True) else "❌ Off"
+
+    settings_text = (
+        "⚙️ <b>Bot Settings:</b>\n\n"
+        "Yahan aap group moderation features ko chalu/band kar sakte hain."
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Bio Link Users Delete: {biolink_status}", callback_data="toggle_delete_biolink")],
+        [InlineKeyboardButton(f"Abuse Messages Delete: {abuse_status}", callback_data="toggle_delete_abuse")],
+        [InlineKeyboardButton(f"Edited Messages Deletion: {edited_status}", callback_data="toggle_delete_edited")],
+        [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+    ])
+
+    if isinstance(message, CallbackQuery):
+        await message.message.edit_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+    else:
+        await message.reply_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+
 
 @client.on_message(filters.group & filters.command("config"))
 async def configure(client: Client, message: Message):
@@ -585,7 +662,7 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         logger.error("Profanity filter not initialized, cannot add abuse word.")
 
 
-# CHANGED: new_chat_members handler for better logging
+# CHANGED: new_chat_members handler for better logging and settings button
 @client.on_message(filters.new_chat_members)
 async def welcome_new_member(client: Client, message: Message) -> None:
     new_members = message.new_chat_members
@@ -614,13 +691,19 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     )
                 except Exception as e:
                     logger.error(f"Error saving group {chat.id} to DB: {e}")
-
+            
+            # ADDED: New settings button on bot's welcome message
             try:
                 if await is_group_admin(chat.id, bot_info.id):
-                    await message.reply_text(
+                    welcome_text = (
                         f"Hello! Main <b>{bot_info.first_name}</b> hun, aur ab main is group mein moderation karunga.\n"
-                        f"Kripya सुनिश्चित karein ki mere paas <b>'Delete Messages'</b>, <b>'Restrict Users'</b> aur <b>'Post Messages'</b> ki admin permissions hain takki main apna kaam theek se kar sakoon."
-                        , parse_mode=enums.ParseMode.HTML)
+                        f"Kripya सुनिश्चित karein ki mere paas <b>'Delete Messages'</b>, <b>'Restrict Users'</b> aur <b>'Post Messages'</b> ki admin permissions hain takki main apna kaam theek se kar sakoon.\n\n"
+                        f"Aap bot settings ko configure karne ke liye niche diye gaye button ka upyog kar sakte hain."
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔧 Bot Settings", callback_data="show_settings_menu")]
+                    ])
+                    await message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
                     logger.info(f"Bot confirmed admin status in {chat.title} ({chat.id}).")
                 else:
                     await message.reply_text(
@@ -645,7 +728,9 @@ async def welcome_new_member(client: Client, message: Message) -> None:
             try:
                 user_profile = await client.get_chat(member.id)
                 bio = user_profile.bio or ""
-                if URL_PATTERN.search(bio):
+                # CHECKED: Check if biolink deletion is enabled for the group
+                settings = get_group_settings(chat.id)
+                if settings.get("delete_biolink", True) and URL_PATTERN.search(bio):
                     await message.delete()
 
                     mode, limit, penalty = get_config_sync(chat.id)
@@ -981,7 +1066,7 @@ async def tag_stop(client: Client, message: Message) -> None:
             logger.info(f"Admin {message.from_user.id} stopped ongoing tagging in chat {chat_id}.")
         except Exception as e:
             logger.error(f"Error canceling tagging task: {e}")
-            await message.reply_text(f"टैगिंग प्रक्रिया बंद करते समय error hui: {e}")
+            await message.reply_text(f"टैगिंग प्रक्रिया बंद karte samay error hui: {e}")
         return
 
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
@@ -1055,14 +1140,17 @@ async def handle_all_messages(client: Client, message: Message) -> None:
     if await is_group_admin(chat.id, user.id) or is_whitelisted_sync(chat.id, user.id):
         return
 
-    if await check_and_delete_biolink(client, message):
+    settings = get_group_settings(chat.id)
+
+    if settings.get("delete_biolink", True) and await check_and_delete_biolink(client, message):
         return
 
-    if profanity_filter is not None and profanity_filter.contains_profanity(message_text):
+    if settings.get("delete_abuse", True) and profanity_filter is not None and profanity_filter.contains_profanity(message_text):
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
         return
 
-    if URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text):
+    # Assuming link in message is also tied to biolink setting
+    if settings.get("delete_biolink", True) and (URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text)):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
         return
 
@@ -1166,7 +1254,9 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     if is_sender_admin or is_whitelisted_sync(chat.id, user.id):
         return
     
-    await handle_incident(client, chat.id, user, "Edited message deleted", edited_message, "edited_message_deleted")
+    settings = get_group_settings(chat.id)
+    if settings.get("delete_edited", True):
+        await handle_incident(client, chat.id, user, "Edited message deleted", edited_message, "edited_message_deleted")
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -1176,15 +1266,18 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
 
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data != "close" and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu')):
+        if data != "close" and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu', 'show_settings_menu', 'toggle_', 'back_to_settings')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
 
         if data == "close":
-            is_current_group_admin = await is_group_admin(chat_id, user_id)
-            if not is_current_group_admin:
-                return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
+            # Modified to allow closing by any user in private chat but only admins in groups
+            if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                is_current_group_admin = await is_group_admin(chat_id, user_id)
+                if not is_current_group_admin:
+                    return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
+            
             try:
                 await query.message.delete()
             except MessageNotModified:
@@ -1199,6 +1292,20 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             return
 
     await query.answer()
+
+    # ADDED: New settings menu callbacks
+    if data == "show_settings_menu":
+        await show_settings_menu(client, query)
+        return
+
+    if data.startswith("toggle_"):
+        setting_key = data.split('_', 1)[1]
+        settings = get_group_settings(chat_id)
+        current_status = settings.get(setting_key, True)
+        new_status = not current_status
+        update_group_setting(chat_id, setting_key, new_status)
+        await show_settings_menu(client, query)
+        return
 
     # --- BioLink Bot Callbacks ---
     if data == "warn_limit":
@@ -1358,6 +1465,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             "<b>• Incident Logging:</b> All violations are logged in a dedicated case channel.\n\n"
             "<b>Commands:</b>\n"
             "• <code>/start</code>: Bot ko start karein (private aur group mein).\n"
+            "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n" # UPDATED: Help menu with new command
             "• <code>/config</code>: Bio-link protection settings (warn-limit, penalty).\n"
             "• <code>/free</code>, <code>/unfree</code>, <code>/freelist</code>: Whitelist management.\n"
             "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
@@ -1754,3 +1862,4 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped")
+
