@@ -222,6 +222,29 @@ def reset_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
+# New: Get/Increment/Reset abuse-specific warnings
+def get_abuse_warnings_sync(user_id: int, chat_id: int):
+    if db is None: return 0
+    warnings_doc = db.warnings.find_one({"user_id": user_id, "chat_id": chat_id})
+    return warnings_doc.get("abuse_count", 0) if warnings_doc else 0
+
+def increment_abuse_warning_sync(chat_id, user_id):
+    if db is None: return 1
+    warnings_doc = db.warnings.find_one_and_update(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$inc": {"abuse_count": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+    return warnings_doc.get("abuse_count", 1)
+
+def reset_abuse_warnings_sync(chat_id, user_id):
+    if db is None: return
+    db.warnings.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"abuse_count": 0}}
+    )
+
 # User profile button ko hatakar code ko badla gaya hai
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
@@ -246,7 +269,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
          notification_text = (
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
-            f"You used an abusive word: ||{original_message.text}||"
+            f"You used an abusive word: {original_message.text}"
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
     else:
@@ -456,16 +479,17 @@ async def configure(client: Client, message: Message):
 
     mode, limit, penalty = get_config_sync(chat_id)
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Warn Limit", callback_data="warn_limit")],
         [
-            InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute"),
-            InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban")
+            InlineKeyboardButton("Bio-Link Settings", callback_data="config_biolink"),
+            InlineKeyboardButton("Abuse Word Settings", callback_data="config_abuse")
         ],
-        [InlineKeyboardButton("Close", callback_data="close")]
+        [
+            InlineKeyboardButton("Close", callback_data="close")
+        ]
     ])
     await client.send_message(
         chat_id,
-        "<b>Choose penalty for users with links in bio:</b>",
+        "<b>Choose the setting you want to configure:</b>",
         reply_markup=keyboard,
         parse_mode=enums.ParseMode.HTML
     )
@@ -1140,18 +1164,41 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 
     settings = get_group_settings(chat.id)
 
-    if settings.get("delete_biolink", True) and await check_and_delete_biolink(client, message):
-        return
-
+    # First, check for abuse words
     if settings.get("delete_abuse", True) and profanity_filter is not None and profanity_filter.contains_profanity(message_text):
-        # CHANGED: 'message_text' now passed to handle_incident to show original word
+        # Log the incident and send the notification
         await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
+        
+        # Now, check the warning count and apply punishment
+        mode, limit, penalty = get_config_sync(chat.id)
+        if mode == "warn":
+            abuse_count = increment_abuse_warning_sync(chat.id, user.id)
+            if abuse_count >= limit:
+                try:
+                    if penalty == "mute":
+                        await client.restrict_chat_member(chat.id, user.id, ChatPermissions())
+                        await client.send_message(
+                            chat.id,
+                            f"<b>{user.first_name}</b> has been muted for using too many abusive words.",
+                            parse_mode=enums.ParseMode.HTML
+                        )
+                    else:
+                        await client.ban_chat_member(chat.id, user.id)
+                        await client.send_message(
+                            chat.id,
+                            f"<b>{user.first_name}</b> has been banned for using too many abusive words.",
+                            parse_mode=enums.ParseMode.HTML
+                        )
+                except errors.ChatAdminRequired:
+                    pass # Ignore if bot doesn't have permissions
         return
 
-    # Assuming link in message is also tied to biolink setting
-    # UPDATED: Changed condition to check for the new 'delete_links_usernames' setting
+    # Check for links/usernames and biolinks next
     if settings.get("delete_links_usernames", True) and URL_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
+        return
+        
+    if settings.get("delete_biolink", True) and await check_and_delete_biolink(client, message):
         return
 
 
@@ -1182,7 +1229,7 @@ async def check_and_delete_biolink(client: Client, message: Message):
                 mention = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
                 if mode == "warn":
-                    count = increment_warning_sync(chat_id, user.id)
+                    count = increment_warning_sync(chat.id, user.id)
 
                     warning_text = (
                         "🚨 <b>Bio-Link Detected</b>\n\n"
@@ -1266,13 +1313,12 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
 
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data != "close" and not data.startswith(('help_menu', 'other_bots', 'donate_info', 'back_to_main_menu', 'show_settings_menu', 'toggle_', 'back_to_settings')):
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_settings_menu', 'toggle_', 'back_to_settings')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
 
         if data == "close":
-            # Modified to allow closing by any user in private chat but only admins in groups
             if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                 is_current_group_admin = await is_group_admin(chat_id, user_id)
                 if not is_current_group_admin:
@@ -1312,30 +1358,82 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     # --- BioLink Bot Callbacks ---
-    if data == "warn_limit":
-        _, selected_limit, _ = get_config_sync(chat_id)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"3 ✅" if selected_limit == 3 else "3", callback_data="setwarn_3"),
-             InlineKeyboardButton(f"4 ✅" if selected_limit == 4 else "4", callback_data="setwarn_4"),
-             InlineKeyboardButton(f"5 ✅" if selected_limit == 5 else "5", callback_data="setwarn_5")],
-            [InlineKeyboardButton("Back", callback_data="back"), InlineKeyboardButton("Close", callback_data="close")]
+    if data == "config_biolink":
+        mode, limit, penalty = get_config_sync(chat_id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_biolink")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_biolink"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_biolink")
+            ],
+            [InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
-            await query.message.edit_text("<b>Select number of warns before penalty:</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text("<b>Choose penalty for users with links in bio:</b>", reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
         return
 
-    if data in ["mute", "ban"]:
-        update_config_sync(chat_id, penalty=data)
+    if data == "config_abuse":
+        mode, limit, penalty = get_config_sync(chat_id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_abuse")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_abuse"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_abuse")
+            ],
+            [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
+        ])
+        try:
+            await query.message.edit_text("<b>Choose settings for abusive words:</b>", reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        return
+
+    if data.startswith("warn_limit_"):
+        source = data.split('_')[-1]
+        _, selected_limit, _ = get_config_sync(chat_id)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"3 ✅" if selected_limit == 3 else "3", callback_data=f"setwarn_{source}_3"),
+             InlineKeyboardButton(f"4 ✅" if selected_limit == 4 else "4", callback_data=f"setwarn_{source}_4"),
+             InlineKeyboardButton(f"5 ✅" if selected_limit == 5 else "5", callback_data=f"setwarn_{source}_5")],
+            [InlineKeyboardButton("Back", callback_data=f"config_{source}"), InlineKeyboardButton("Close", callback_data="close")]
+        ])
+        try:
+            await query.message.edit_text(f"<b>Select number of warns before penalty for {source}:</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        return
+
+    if data.startswith("setwarn_"):
+        parts = data.split('_')
+        source = parts[1]
+        count = int(parts[2])
+        update_config_sync(chat_id, limit=count)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"3 ✅" if count == 3 else "3", callback_data=f"setwarn_{source}_3"),
+             InlineKeyboardButton(f"4 ✅" if count == 4 else "4", callback_data=f"setwarn_{source}_4"),
+             InlineKeyboardButton(f"5 ✅" if count == 5 else "5", callback_data=f"setwarn_{source}_5")],
+            [InlineKeyboardButton("Back", callback_data=f"config_{source}"), InlineKeyboardButton("Close", callback_data="close")]
+        ])
+        try:
+            await query.message.edit_text(f"<b>Warning limit for {source} set to {count}</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        return
+
+    if data.startswith("mute_") and data != "mute_biolink":
+        # New mute/ban logic for abuse words
+        source = data.split('_')[1]
+        update_config_sync(chat_id, penalty="mute")
         mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Warn Limit", callback_data="warn_limit")],
+            [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
             [
-                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute"),
-                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban")
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
             ],
-            [InlineKeyboardButton("Close", callback_data="close")]
+            [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
             await query.message.edit_text("<b>Punishment selected:</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -1343,20 +1441,29 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             pass
         return
 
-    if data.startswith("setwarn_"):
-        count = int(data.split("_")[1])
-        update_config_sync(chat_id, limit=count)
+    if data.startswith("ban_") and data != "ban_biolink":
+        # New mute/ban logic for abuse words
+        source = data.split('_')[1]
+        update_config_sync(chat_id, penalty="ban")
+        mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"3 ✅" if count == 3 else "3", callback_data="setwarn_3"),
-             InlineKeyboardButton(f"4 ✅" if count == 4 else "4", callback_data="setwarn_4"),
-             InlineKeyboardButton(f"5 ✅" if count == 5 else "5", callback_data="setwarn_5")],
-            [InlineKeyboardButton("Back", callback_data="back"), InlineKeyboardButton("Close", callback_data="close")]
+            [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
+            ],
+            [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
-            await query.message.edit_text(f"<b>Warning limit set to {count}</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+            await query.message.edit_text("<b>Punishment selected:</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
             pass
         return
+
+    if data == "back_from_config":
+        await configure(client, query.message)
+        return
+
 
     if data.startswith("unmute_"):
         parts = data.split('_')
