@@ -155,7 +155,8 @@ def get_group_settings(chat_id):
         return {
             "delete_biolink": True,
             "delete_abuse": True,
-            "delete_edited": True
+            "delete_edited": True,
+            "delete_link_username": True  # NEW SETTING
         }
     settings = db.settings.find_one({"chat_id": chat_id})
     if not settings:
@@ -164,7 +165,8 @@ def get_group_settings(chat_id):
             "chat_id": chat_id,
             "delete_biolink": True,
             "delete_abuse": True,
-            "delete_edited": True
+            "delete_edited": True,
+            "delete_link_username": True  # NEW SETTING
         }
         db.settings.insert_one(default_settings)
         return default_settings
@@ -215,7 +217,7 @@ def reset_warnings_sync(chat_id, user_id):
     db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
 
 # User profile button ko hatakar code ko badla gaya hai
-async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
+async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, original_word=""):
     original_message_id = original_message.id
     user_mention = user.mention
 
@@ -241,16 +243,24 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
             f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
-            f"Your word: >abuse<" # Changed here for spoiler
+            f"Your word: >!{original_word}!<" # Changed here for spoiler
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
-    else:
+    elif case_type == "link_or_username":
         notification_text = (
             f"<b>🔗 Link/Username Removed!</b>\n\n"
             f"Hey {user_mention_text}, your message was removed because it contained a link or username."
             f"\n\n"
             f"<i>Please avoid sharing links or usernames in the group.</i>"
         )
+    # THIS IS FOR BIO-LINK
+    else:
+         notification_text = (
+            f"<b>🚨 Bio-Link Detected - Your message was deleted!</b>\n\n"
+            f"Hey {user_mention_text}, your message was removed because you have a link in your bio.\n"
+            f"<i>Please remove the link from your bio.</i>"
+        )
+
 
     keyboard = [
         [
@@ -416,24 +426,31 @@ async def show_settings_menu(client, message):
 
     settings = get_group_settings(chat_id)
     
+    # UPDATED: Button names
     biolink_status = "✅ On" if settings.get("delete_biolink", True) else "❌ Off"
     abuse_status = "✅ On" if settings.get("delete_abuse", True) else "❌ Off"
     edited_status = "✅ On" if settings.get("delete_edited", True) else "❌ Off"
+    link_username_status = "✅ On" if settings.get("delete_link_username", True) else "❌ Off" # NEW
 
     settings_text = (
         "⚙️ <b>Bot Settings:</b>\n\n"
         "Yahan aap group moderation features ko chalu/band kar sakte hain."
     )
     
+    # UPDATED: Keyboard with new button and labels
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Bio Link Users Delete: {biolink_status}", callback_data="toggle_delete_biolink")],
-        [InlineKeyboardButton(f"Abuse Messages Delete: {abuse_status}", callback_data="toggle_delete_abuse")],
-        [InlineKeyboardButton(f"Edited Messages Deletion: {edited_status}", callback_data="toggle_delete_edited")],
+        [InlineKeyboardButton(f"🚨 Bio-Link Detected - {biolink_status}", callback_data="toggle_delete_biolink")],
+        [InlineKeyboardButton(f"🚨 Abuse Decteded - {abuse_status}", callback_data="toggle_delete_abuse")],
+        [InlineKeyboardButton(f"📝 Edited Message Deleted! - {edited_status}", callback_data="toggle_delete_edited")],
+        [InlineKeyboardButton(f"🔗 Link/Username Removed! - {link_username_status}", callback_data="toggle_delete_link_username")], # NEW
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
     ])
 
     if isinstance(message, CallbackQuery):
-        await message.message.edit_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        try:
+            await message.message.edit_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
     else:
         await message.reply_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
 
@@ -773,8 +790,6 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                                 await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
                         except errors.ChatAdminRequired:
                             return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-
-
             except Exception as e:
                 logger.error(f"Error checking bio for new member {member.id}: {e}")
 
@@ -1130,101 +1145,27 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         return
 
     settings = get_group_settings(chat.id)
+    
+    # Check for bio-link first
+    if settings.get("delete_biolink", True):
+        user_profile = await client.get_chat(user.id)
+        user_bio = user_profile.bio or ""
+        if URL_PATTERN.search(user_bio):
+            await handle_incident(client, chat.id, user, "बायो में लिंक (Bio-Link) 🔗", message, "biolink")
+            return
 
-    if settings.get("delete_biolink", True) and await check_and_delete_biolink(client, message):
-        return
+    # Check for abuse
+    if settings.get("delete_abuse", True) and profanity_filter is not None:
+        detected_words = profanity_filter.detect_profanity_words(message_text)
+        if detected_words:
+            first_word = detected_words[0]
+            await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse", original_word=first_word)
+            return
 
-    if settings.get("delete_abuse", True) and profanity_filter is not None and profanity_filter.contains_profanity(message_text):
-        await handle_incident(client, chat.id, user, "गाली-गलौज (Profanity) 😡", message, "abuse")
-        return
-
-    # Assuming link in message is also tied to biolink setting
-    if settings.get("delete_biolink", True) and URL_PATTERN.search(message_text):
+    # Check for link/username in message content
+    if settings.get("delete_link_username", True) and URL_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
         return
-
-
-async def check_and_delete_biolink(client: Client, message: Message):
-    user = message.from_user
-    user_id = user.id
-    chat_id = message.chat.id
-
-    if not user:
-        return False
-    
-    is_sender_admin = await is_group_admin(chat_id, user_id)
-    is_biolink_exception = is_whitelisted_sync(chat_id, user_id)
-
-    if is_sender_admin or is_biolink_exception:
-        return False
-    
-    try:
-        user_profile = await client.get_chat(user_id)
-        user_bio = user_profile.bio or ""
-        
-        if URL_PATTERN.search(user_bio):
-            try:
-                await message.delete()
-
-                mode, limit, penalty = get_config_sync(chat_id)
-                full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-                mention = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
-
-                if mode == "warn":
-                    count = increment_warning_sync(chat_id, user.id)
-
-                    warning_text = (
-                        "🚨 <b>Bio-Link Detected</b>\n\n"
-                        f"- <b>User:</b> {mention}\n"
-                        f"- <b>Reason:</b> A link was found in your bio.\n"
-                        f"- <b>Warning:</b> {count}/{limit}\n\n"
-                        "Please remove the link from your bio to avoid being restricted."
-                    )
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("❌ Cancel Warning", callback_data=f"cancel_warn_{user.id}"),
-                         InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
-                        [InlineKeyboardButton("🗑️ Close", callback_data="close")]
-                    ])
-
-                    try:
-                        sent = await message.reply_text(warning_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-                        
-                    except Exception as e:
-                        logger.error(f"Error sending bio-link warning: {e}")
-                        return True
-
-                    if count >= limit:
-                        try:
-                            if penalty == "mute":
-                                await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
-                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute ✅", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                                await sent.edit_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                            else:
-                                await client.ban_chat_member(chat_id, user.id)
-                                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban ✅", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                                await sent.edit_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                        except errors.ChatAdminRequired:
-                            await sent.edit_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-                else:
-                    try:
-                        if penalty == "mute":
-                            await client.restrict_chat_member(chat_id, user.id, ChatPermissions())
-                            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unmute", callback_data=f"unmute_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                            await message.reply_text(f"<b>{full_name} को 🔇 म्यूट कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                        else:
-                            await client.ban_chat_member(chat_id, user.id)
-                            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Unban", callback_data=f"unban_{user.id}_{chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
-                            await message.reply_text(f"<b>{full_name} को 🔨 बैन कर दिया गया है (बायो में लिंक के लिए)。</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                    except errors.ChatAdminRequired:
-                        return await message.reply_text(f"<b>I don't have permission to {penalty} users.</b>", parse_mode=enums.ParseMode.HTML)
-                return True
-            except Exception:
-                pass
-                    
-        return False
-
-    except Exception:
-        pass
 
 
 # --- Handler for Edited Messages ---
