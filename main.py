@@ -35,9 +35,9 @@ ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
 
-# Corrected regex pattern to be case-insensitive for 'HTTPS' and to handle @usernames
-URL_PATTERN = re.compile(r'(https?://|www\.)[a-zA-Z0-9.\-]+(\.[a-zA-Z]{2,})+(/[a-zA-Z0-9._%+-]*)*', re.IGNORECASE)
-USERNAME_PATTERN = re.compile(r'@\w+', re.IGNORECASE)
+# Corrected regex pattern to catch all links and usernames
+# This now catches http, https, t.me, www., and any word starting with @
+URL_PATTERN = re.compile(r'\b(?:https?://|www\.|t\.me/|telegra\.ph/)[^\s]+\b|@\w+', re.IGNORECASE)
 
 # --- Tagging variables
 TAG_MESSAGES = {}
@@ -240,7 +240,8 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
          notification_text = (
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
-            f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>"
+            f"✅ <i>Please be mindful of your words to maintain a safe and respectful environment for everyone.</i>\n\n"
+            f"Your word: >abuse<" # Changed here for spoiler
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
     else:
@@ -1138,7 +1139,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
         return
 
     # Assuming link in message is also tied to biolink setting
-    if settings.get("delete_biolink", True) and (URL_PATTERN.search(message_text) or USERNAME_PATTERN.search(message_text)):
+    if settings.get("delete_biolink", True) and URL_PATTERN.search(message_text):
         await handle_incident(client, chat.id, user, "मैसेज में लिंक या यूज़रनेम (Link or Username in Message) 🔗", message, "link_or_username")
         return
 
