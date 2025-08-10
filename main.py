@@ -293,18 +293,11 @@ async def start(client: Client, message: Message) -> None:
     add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
     if chat.type == enums.ChatType.PRIVATE:
+        # Changed: Shorter message for private chat start
         welcome_message = (
             f"👋 <b>Namaste {user.mention}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
-            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun, "
-            f"gaaliyon wale messages ko delete karta hun aur zaroorat padne par warning bhi deta hun.\n\n"
-            f"<b>Mere features:</b>\n"
-            f"• Gaali detection aur deletion\n"
-            f"• Bio-link protection\n"
-            f"• User warnings aur actions (Mute, Ban, Kick)\n"
-            f"• Whitelist management\n"
-            f"• Incident logging\n\n"
-            f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
+            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun."
         )
 
         keyboard = [
@@ -423,8 +416,13 @@ async def settings_command_handler(client: Client, message: Message):
 
     await show_settings_menu(client, message)
 
+# FIXED: Corrected show_settings_menu to handle CallbackQuery and Message objects
 async def show_settings_menu(client, message):
-    chat_id = message.chat.id
+    if isinstance(message, CallbackQuery):
+        chat_id = message.message.chat.id
+    else:
+        chat_id = message.chat.id
+
     settings = get_group_settings(chat_id)
     
     biolink_status = "✅ On" if settings.get("delete_biolink", True) else "❌ Off"
@@ -1299,11 +1297,15 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     if data.startswith("toggle_"):
-        setting_key = data.split('_', 1)[1]
+        setting_key = data.split('toggle_', 1)[1]
         settings = get_group_settings(chat_id)
         current_status = settings.get(setting_key, True)
         new_status = not current_status
         update_group_setting(chat_id, setting_key, new_status)
+        await show_settings_menu(client, query)
+        return
+        
+    if data == "back_to_settings":
         await show_settings_menu(client, query)
         return
 
@@ -1524,15 +1526,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         welcome_message = (
             f"👋 <b>Namaste {query.from_user.mention}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
-            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun, "
-            f"gaaliyon wale messages ko delete karta hun aur zaroorat padne par warning bhi deta hun.\n\n"
-            f"<b>Mere features:</b>\n"
-            f"• Gaali detection aur deletion\n"
-            f"• Bio-link protection\n"
-            f"• User warnings aur actions (Mute, Ban, Kick)\n"
-            f"• Whitelist management\n"
-            f"• Incident logging\n\n"
-            f"Agar aapko koi madad chahiye, toh niche diye gaye buttons ka upyog karein."
+            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun."
         )
         
         # New keyboard to handle the back button functionality
@@ -1862,4 +1856,3 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped")
-
