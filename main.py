@@ -1479,7 +1479,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     elif data == "other_bots":
         other_bots_text = (
             "<b>Mere kuch aur bots:</b>\n\n"
-            "• <b>Movies & Webseries:</b> <a href='https://t.me/asflter_bot'>@asflter_bot</a>\n"
+            "• <b>Movies & Webseries:</b> <a href='https://t.me/asfilter_bot'>@asfilter_bot</a>\n"
             "  <i>Ye hai sabhi movies, webseries, anime, Korean drama, aur sabhi TV show sabhi languages mein yahan milte hain.</i>\n\n"
             "• <b>Chat Bot:</b> <a href='https://t.me/askiangelbot'>@askiangelbot</a>\n"
             "  <i>Ye bot group par chat karti hai aur isme acche acche group manage karne ke liye commands hain.</i>\n"
