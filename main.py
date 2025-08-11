@@ -30,7 +30,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Fix: Use a static ID here instead of fetching from .env
 # Replace 'YOUR_LOG_CHANNEL_ID_HERE' with your actual channel ID.
 # Example: LOG_CHANNEL_ID = -1001234567890
-LOG_CHANNEL_ID = -1002352329534 # yaha maine id add kar di hai 
+LOG_CHANNEL_ID = -1002717243409 # yaha maine id add kar di hai 
 
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
