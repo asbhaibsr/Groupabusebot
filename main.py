@@ -266,10 +266,13 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
         )
     # THIS IS THE ABUSIVE MESSAGE NOTIFICATION
     elif case_type == "abuse":
-         notification_text = (
+         # Get abuse warning count for the notification message
+        abuse_count = get_abuse_warnings_sync(user.id, chat_id)
+        notification_text = (
             f"<b>🚫 Hey {user_mention_text}, your message was removed!</b>\n\n"
             f"It contained language that violates our community guidelines.\n\n"
-            f"You used an abusive word: {original_message.text}"
+            f"You used an abusive word: {original_message.text}\n"
+            f"<b>This is your warning number {abuse_count}.</b>"
         )
     # THIS IS THE LINK OR USERNAME NOTIFICATION
     else:
