@@ -2067,4 +2067,171 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.send_message(chat_id=group_chat_id, text=warn_message, parse_mode=enums.ParseMode.HTML)
 
             if warn_count >= 3:
-                permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls
+                permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False)
+                await client.restrict_chat_member(
+                    chat_id=group_chat_id,
+                    user_id=target_user_id,
+                    permissions=permissions
+                )
+                permanent_mute_message = (
+                    f"❌ <b>Permanent Mute</b> ❌\n\n"
+                    f"➡️ {mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
+                )
+                await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
+                try:
+                    await query.message.edit_text(f"✅ {mention} ko {warn_count} chetavniyan milne ke baad permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
+                except MessageNotModified:
+                    pass
+                logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
+            else:
+                try:
+                    await query.message.edit_text(f"✅ {mention} ko chetavni bhej di gai hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
+                except MessageNotModified:
+                    pass
+            logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
+
+        except Exception as e:
+            try:
+                await query.message.edit_text(f"Chetavni bhejte samay error hui: {e}")
+            except MessageNotModified:
+                pass
+            logger.error(f"Error warning user {target_user_id} in {group_chat_id}: {e}")
+
+    elif data.startswith("back_to_notification_"):
+        parts = data.split('_')
+        target_user_id = int(parts[3])
+        group_chat_id = int(parts[4])
+
+        try:
+            user_obj = await client.get_chat_member(group_chat_id, target_user_id)
+            mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
+        except Exception:
+            mention = f"User (`{target_user_id}`)"
+
+        notification_message = (
+            f"🚨 <b>नियम उल्लंघन</b> 🚨\n\n"
+            f"<b>👤 यूज़र:</b> {mention}\n"
+            f"<b>📝 कारण:</b> (पिछला उल्लंघन)\n\n"
+            f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
+            ],
+            [
+            ]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await query.message.edit_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+
+    if data == "confirm_broadcast":
+        admin_id = query.from_user.id
+        message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
+
+        if not message_to_broadcast:
+            await query.message.edit_text("Broadcast message not found. Please try again.")
+            return
+
+        try:
+            await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
+        except MessageNotModified:
+            pass
+
+        if db is None:
+            await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
+            return
+
+        all_chats = []
+        if db.groups is not None:
+            try:
+                groups = db.groups.find({})
+                for group in groups:
+                    all_chats.append(group.get("chat_id"))
+            except Exception as e:
+                logger.error(f"Error fetching groups from DB for broadcast: {e}")
+
+        if db.users is not None:
+            try:
+                users = db.users.find({})
+                for user in users:
+                    all_chats.append(user.get("user_id"))
+            except Exception as e:
+                logger.error(f"Error fetching users from DB for broadcast: {e}")
+
+        success_count = 0
+        fail_count = 0
+        total_chats = len(all_chats)
+
+        for i, chat_id in enumerate(all_chats):
+            try:
+                await client.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=message_to_broadcast.chat.id,
+                    message_id=message_to_broadcast.id
+                )
+                success_count += 1
+            except FloodWait as e:
+                logger.warning(f"Broadcast: FloodWait error. Sleeping for {e.value} seconds.")
+                await asyncio.sleep(e.value)
+                try:
+                    await client.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=message_to_broadcast.chat.id,
+                        message_id=message_to_broadcast.id
+                    )
+                    success_count += 1
+                except Exception as e_retry:
+                    logger.error(f"Broadcast retry failed for {chat_id}: {e_retry}")
+                    fail_count += 1
+            except Exception as e:
+                logger.error(f"Failed to broadcast to chat {chat_id}: {e}")
+                fail_count += 1
+            
+            if (i + 1) % 10 == 0 or (i + 1) == total_chats:
+                try:
+                    await query.message.edit_text(f"📢 Broadcast चल रहा है...\n\nसफलतापूर्वक भेजा गया: {success_count}/{total_chats}\nविफल: {fail_count}/{total_chats}", parse_mode=enums.ParseMode.HTML)
+                except MessageNotModified:
+                    pass
+
+        report_text = f"✅ Broadcast pura hua!\n\nसफलतापूर्वक भेजा गया: {success_count} चैट में\nविफल: {fail_count} चैट में"
+        try:
+            await query.message.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        BROADCAST_MESSAGE.pop(admin_id, None)
+        logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} chats.")
+
+    if data == "cancel_broadcast":
+        await query.message.edit_text("Broadcast cancelled.")
+        user_id = query.from_user.id
+        if BROADCAST_MESSAGE.get(user_id):
+            BROADCAST_MESSAGE.pop(user_id)
+
+
+# --- Flask App for Health Check ---
+@app.route('/')
+def health_check():
+    """Simple health check endpoint for Koyeb."""
+    return jsonify({"status": "healthy", "bot_running": True, "mongodb_connected": db is not None}), 200
+
+def run_flask_app():
+    """Runs the Flask application."""
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- Entry Point ---
+if __name__ == "__main__":
+    init_mongodb()
+
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    logger.info("Bot is starting...")
+    client.run()
+    logger.info("Bot stopped")
