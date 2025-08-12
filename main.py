@@ -383,7 +383,8 @@ async def help_handler(client: Client, message: Message):
     help_text = (
         "<b>🛠️ Bot Commands & Usage</b>\n\n"
         "<b>Private Message Commands:</b>\n"
-        "`/lock <@username> <message>` - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n\n"
+        "`/lock <@username> <message>` - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
+        "`/secretchat <@username> <message>` - Ek secret message bhejein, jo group mein sirf ek pop-up mein dikhega. (Group mein hi kaam karega)\n\n"
         "<b>Tic Tac Toe Game:</b>\n"
         "`/tictac @user1 @user2` - Do users ke saath Tic Tac Toe game shuru karein. Ek baar mein ek hi game chalega.\n\n"
         "<b>BioLink Protector Commands:</b>\n"
@@ -584,18 +585,10 @@ async def show_secret_callback(client: Client, query: CallbackQuery):
         
     secret_message_text = secret_chat_data['message']
     
-    await query.message.edit_text(f"<b>🤫 Secret Message:</b>\n\n{secret_message_text}", parse_mode=enums.ParseMode.HTML)
+    await query.answer(secret_message_text, show_alert=True)
     
     SECRET_CHATS.pop(secret_chat_id)
     
-    await asyncio.sleep(60)
-    
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-
-
 # --- Tic Tac Toe Game Logic ---
 TIC_TAC_TOE_BUTTONS = [
     [InlineKeyboardButton("➖", callback_data="tictac_0"), InlineKeyboardButton("➖", callback_data="tictac_1"), InlineKeyboardButton("➖", callback_data="tictac_2")],
@@ -845,7 +838,7 @@ async def show_on_off_settings(client, message):
         [InlineKeyboardButton(f"🚨 Abuse Detected - {abuse_status}", callback_data="toggle_delete_abuse")],
         [InlineKeyboardButton(f"📝 Edited Message Deleted - {edited_status}", callback_data="toggle_delete_edited")],
         [InlineKeyboardButton(f"🔗 Link/Username Removed - {links_usernames_status}", callback_data="toggle_delete_links_usernames")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu"), InlineKeyboardButton("Main Menu", callback_data="back_to_settings_main_menu")]
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
     ])
 
     if isinstance(message, CallbackQuery):
@@ -869,15 +862,11 @@ async def show_warn_punishment_settings(client, message):
     )
     
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"🚨 Bio-Link ({biolink_limit} warns)", callback_data="config_biolink"),
-            InlineKeyboardButton(f"Punish: {biolink_punishment.capitalize()}", callback_data="toggle_punishment_biolink")
-        ],
-        [
-            InlineKeyboardButton(f"🚨 Abuse ({abuse_limit} warns)", callback_data="config_abuse"),
-            InlineKeyboardButton(f"Punish: {abuse_punishment.capitalize()}", callback_data="toggle_punishment_abuse")
-        ],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu"), InlineKeyboardButton("Main Menu", callback_data="back_to_settings_main_menu")]
+        [InlineKeyboardButton(f"🚨 Bio-Link ({biolink_limit} warns)", callback_data="config_biolink")],
+        [InlineKeyboardButton(f"Punish: {biolink_punishment.capitalize()}", callback_data="toggle_punishment_biolink")],
+        [InlineKeyboardButton(f"🚨 Abuse ({abuse_limit} warns)", callback_data="config_abuse")],
+        [InlineKeyboardButton(f"Punish: {abuse_punishment.capitalize()}", callback_data="toggle_punishment_abuse")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
     ])
     
     if isinstance(message, CallbackQuery):
@@ -897,7 +886,7 @@ async def show_game_settings(client, message):
                        
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Tic Tac Toe Game", callback_data="start_tictactoe_from_settings")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu"), InlineKeyboardButton("Main Menu", callback_data="back_to_settings_main_menu")]
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
     ])
     
     if isinstance(message, CallbackQuery):
@@ -1281,7 +1270,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show')):
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
@@ -1333,7 +1322,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                 InlineKeyboardButton(f"Punishment: Mute {'✅' if punishment == 'mute' else ''}", callback_data=f"set_punishment_mute_{category}"),
                 InlineKeyboardButton(f"Punishment: Ban {'✅' if punishment == 'ban' else ''}", callback_data=f"set_punishment_ban_{category}")
             ],
-            [InlineKeyboardButton("⬅️ Back", callback_data="show_warn_punishment_settings"), InlineKeyboardButton("Main Menu", callback_data="show_settings_main_menu")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="show_warn_punishment_settings")]
         ])
         await query.message.edit_text(f"<b>⚙️ Configure {category.capitalize()} Warnings:</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
         return
@@ -1345,7 +1334,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             [InlineKeyboardButton(f"3 {'✅' if warn_limit == 3 else ''}", callback_data=f"set_limit_{category}_3"),
              InlineKeyboardButton(f"4 {'✅' if warn_limit == 4 else ''}", callback_data=f"set_limit_{category}_4"),
              InlineKeyboardButton(f"5 {'✅' if warn_limit == 5 else ''}", callback_data=f"set_limit_{category}_5")],
-            [InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}"), InlineKeyboardButton("Main Menu", callback_data="show_settings_main_menu")]
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}")]
         ])
         await query.message.edit_text(f"<b>{category.capitalize()} Warn Limit:</b>\n"
                                      f"Select the number of warnings before a user is punished.",
@@ -1358,7 +1347,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         limit = int(parts[3])
         update_warn_settings(chat_id, category, limit=limit)
         await query.message.edit_text(f"✅ {category.capitalize()} warning limit set to {limit}.",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}"), InlineKeyboardButton("Main Menu", callback_data="show_settings_main_menu")]])
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}")]])
                                      , parse_mode=enums.ParseMode.HTML)
         return
 
@@ -1368,7 +1357,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         category = parts[3]
         update_warn_settings(chat_id, category, punishment=punishment)
         await query.message.edit_text(f"✅ {category.capitalize()} punishment set to {punishment.capitalize()}.",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}"), InlineKeyboardButton("Main Menu", callback_data="show_settings_main_menu")]])
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"config_{category}")]])
                                      , parse_mode=enums.ParseMode.HTML)
         return
 
@@ -1475,7 +1464,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
                     text += f"{i}: [User not found] [`{uid}`]\n"
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="show_settings_main_menu"), InlineKeyboardButton("Main Menu", callback_data="show_settings_main_menu")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="show_settings_main_menu")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ])
         await query.message.edit_text(text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
