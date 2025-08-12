@@ -697,7 +697,7 @@ async def tictac_game_start_command(client: Client, message: Message):
     else:
         # Start game with one player and a join button
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+            [InlineKeyboardButton(f"Join Game", callback_data=f"tictac_join_game_{sender.id}")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ])
         
@@ -712,23 +712,24 @@ async def tictac_game_start_command(client: Client, message: Message):
 @client.on_callback_query(filters.regex("^tictac_join_game_"))
 async def tictac_join_game(client: Client, query: CallbackQuery):
     chat_id = query.message.chat.id
-    sender_id = query.from_user.id
+    joiner_id = query.from_user.id
+    starter_id = int(query.data.split("_")[-1])
 
     if chat_id in TIC_TAC_TOE_GAMES:
         await query.answer("Ek game pehle hi chal raha hai.", show_alert=True)
         return
 
-    # The user who started the game is in the message's text
-    original_message_text = query.message.text
-    starter_user_id = int(re.search(r"tg://user\?id=(\d+)", original_message_text).group(1))
-
-    if sender_id == starter_user_id:
+    if joiner_id == starter_id:
         await query.answer("Aap pehle se hi player 1 hain. Kripya kisi aur ko join karne dein.", show_alert=True)
         return
     
-    starter_user = await client.get_users(starter_user_id)
-    joiner_user = query.from_user
-    
+    try:
+        starter_user = await client.get_users(starter_id)
+        joiner_user = query.from_user
+    except Exception:
+        await query.answer("Starting user not found.", show_alert=True)
+        return
+
     players = [starter_user, joiner_user]
     random.shuffle(players)
     
@@ -739,7 +740,7 @@ async def tictac_join_game(client: Client, query: CallbackQuery):
         'player_names': {players[0].id: players[0].first_name, players[1].id: players[1].first_name},
         'board': board,
         'current_turn_id': players[0].id,
-        'message_id': None,
+        'message_id': query.message.id,
         'last_active': datetime.now()
     }
     
@@ -756,13 +757,15 @@ async def tictac_join_game(client: Client, query: CallbackQuery):
                    f"**Current Turn:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]}"
 
     # Edit the message to start the game
-    await query.message.edit_text(
-        initial_text,
-        reply_markup=get_tictac_keyboard(board),
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
-    
-    TIC_TAC_TOE_GAMES[chat_id]['message_id'] = query.message.id
+    try:
+        await query.message.edit_text(
+            initial_text,
+            reply_markup=get_tictac_keyboard(board),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except MessageNotModified:
+        pass
+
 
 @client.on_callback_query(filters.regex("^tictac_"))
 async def tictac_game_play(client: Client, query: CallbackQuery):
@@ -770,7 +773,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
     game_state = TIC_TAC_TOE_GAMES.get(chat_id)
     
     if not game_state:
-        await query.answer("Yeh game abhi active nahi hai.", show_alert=True)
+        await query.answer("Yeh game abhi active nahi hai. Kripya naya game shuru karein.", show_alert=True)
         return
     
     user_id = query.from_user.id
@@ -813,8 +816,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
     winner = check_win(board)
     if winner:
         winner_name = game_state['player_names'][user_id]
-        final_text = f"🎉 **{winner_name} wins the game!** 🎉\n\n" \
-                     f"**Final Board:**"
+        final_text = f"🎉 **{winner_name} wins the game!** 🎉\n\n"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
@@ -830,8 +832,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         return
     
     if check_draw(board):
-        final_text = "🤝 **Game is a draw!** 🤝\n\n" \
-                     "**Final Board:**"
+        final_text = "🤝 **Game is a draw!** 🤝\n\n"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
@@ -857,11 +858,14 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
                    f"**Player 2:** {game_state['player_names'][list(game_state['players'].keys())[1]]} (⭕)\n\n" \
                    f"**Current Turn:** {current_player_name}"
 
-    await query.message.edit_text(
-        updated_text,
-        reply_markup=get_tictac_keyboard(board),
-        parse_mode=enums.ParseMode.MARKDOWN
-    )
+    try:
+        await query.message.edit_text(
+            updated_text,
+            reply_markup=get_tictac_keyboard(board),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except MessageNotModified:
+        pass
     
 @client.on_callback_query(filters.regex("^tictac_try_again"))
 async def tictac_try_again(client: Client, query: CallbackQuery):
@@ -873,7 +877,7 @@ async def tictac_try_again(client: Client, query: CallbackQuery):
     starter = query.from_user
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+        [InlineKeyboardButton(f"Join Game", callback_data=f"tictac_join_game_{starter.id}")],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
     ])
     
@@ -1424,8 +1428,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"Set Warn Limit ({warn_limit})", callback_data=f"set_warn_limit_{category}")],
             [
-                InlineKeyboardButton(f"Punishment: Mute {'✅' if punishment == 'mute' else ''}", callback_data=f"set_punishment_mute_{category}"),
-                InlineKeyboardButton(f"Punishment: Ban {'✅' if punishment == 'ban' else ''}", callback_data=f"set_punishment_ban_{category}")
+                InlineKeyboardButton(f"Punish: Mute {'✅' if punishment == 'mute' else ''}", callback_data=f"set_punishment_mute_{category}"),
+                InlineKeyboardButton(f"Punish: Ban {'✅' if punishment == 'ban' else ''}", callback_data=f"set_punishment_ban_{category}")
             ],
             [InlineKeyboardButton("⬅️ Back", callback_data="show_warn_punishment_settings")]
         ])
@@ -1479,7 +1483,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             return
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+            [InlineKeyboardButton(f"Join Game", callback_data=f"tictac_join_game_{user.id}")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ])
         
@@ -1615,7 +1619,7 @@ async def tag_all(client: Client, message: Message) -> None:
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot:
                 emoji = random.choice(EMOJIS)
-                members_to_tag.append(member.user.mention(emoji))
+                members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
 
         if not members_to_tag:
             await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
@@ -1710,7 +1714,7 @@ async def online_tag(client: Client, message: Message) -> None:
         async for member in client.get_chat_members(chat_id):
             if not member.user.is_bot and member.user.status in [enums.UserStatus.ONLINE, enums.UserStatus.RECENTLY]:
                 emoji = random.choice(EMOJIS)
-                online_members_to_tag.append(member.user.mention(emoji))
+                online_members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
 
         if not online_members_to_tag:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
