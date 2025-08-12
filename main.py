@@ -582,8 +582,14 @@ async def show_secret_callback(client: Client, query: CallbackQuery):
     if query.from_user.id != secret_chat_data['target_id']:
         await query.answer("This secret message is not for you.", show_alert=True)
         return
+    
+    try:
+        sender_user = await client.get_users(secret_chat_data['sender_id'])
+        sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
+    except Exception:
+        sender_name = "Unknown User"
         
-    secret_message_text = secret_chat_data['message']
+    secret_message_text = f"From: {sender_name}\n\nMessage: {secret_chat_data['message']}"
     
     await query.answer(secret_message_text, show_alert=True)
     
@@ -819,7 +825,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         final_text = f"🎉 **{winner_name} wins the game!** 🎉\n\n"
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
+            [InlineKeyboardButton("Try Again", callback_data=f"tictac_try_again_{user_id}")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ])
         
@@ -835,7 +841,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         final_text = "🤝 **Game is a draw!** 🤝\n\n"
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
+            [InlineKeyboardButton("Try Again", callback_data=f"tictac_try_again_{user_id}")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ])
         
@@ -873,9 +879,13 @@ async def tictac_try_again(client: Client, query: CallbackQuery):
     if chat_id in TIC_TAC_TOE_GAMES:
         await query.answer("Ek game pehle se hi chal raha hai. Kripya uske khatam hone ka intezaar karein.", show_alert=True)
         return
+        
+    starter_id = int(query.data.split('_')[-1])
+    try:
+        starter = await client.get_users(starter_id)
+    except Exception:
+        starter = query.from_user
 
-    starter = query.from_user
-    
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"Join Game", callback_data=f"tictac_join_game_{starter.id}")],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
