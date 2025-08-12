@@ -16,7 +16,7 @@ from pyrogram.errors import BadRequest, Forbidden, MessageNotModified, FloodWait
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-# Load environment variables from .env file (for local development)
+# Load environment variables from .env file
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
@@ -27,13 +27,13 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Fix: Use a static ID here instead of fetching from .env
-# Replace 'YOUR_LOG_CHANNEL_ID_HERE' with your actual channel ID.
-# Example: LOG_CHANNEL_ID = -1001234567890
-LOG_CHANNEL_ID = -1002717243409 # yaha maine id add kar di hai 
+# Yahan par tumhara actual log channel ID daalo
+LOG_CHANNEL_ID = -1002717243409 
+
+# Yahan par apne bot admin user IDs daalo
+ADMIN_USER_IDS = [7315805581]
 
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
-ADMIN_USER_IDS = [7315805581]  # NOTE: Replace with your actual admin IDs.
 
 bot_start_time = datetime.now()
 BROADCAST_MESSAGE = {}
@@ -233,7 +233,7 @@ def increment_abuse_warning_sync(chat_id, user_id):
 def reset_abuse_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.update_one(
-        {"chat_id": chat_id, "user_id": user_id},
+        {"chat_id": chat_id},
         {"$set": {"abuse_count": 0}}
     )
 
@@ -241,7 +241,8 @@ def reset_abuse_warnings_sync(chat_id, user_id):
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type):
     original_message_id = original_message.id
     full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-    user_mention_text = f"<a href='tg://user?id={user.id}'>{full_name}</a>"
+    # Change: Use regular mention without the link
+    user_mention_text = f"<b>{full_name}</b>"
 
     try:
         await client.delete_messages(chat_id=chat_id, message_ids=original_message_id)
@@ -334,7 +335,7 @@ async def start(client: Client, message: Message) -> None:
 
     if chat.type == enums.ChatType.PRIVATE:
         welcome_message = (
-            f"👋 <b>Namaste {user.mention}!</b>\n\n"
+            f"👋 <b>Namaste {user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
             f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun."
         )
@@ -367,7 +368,7 @@ async def start(client: Client, message: Message) -> None:
 
         log_message = (
             f"<b>✨ New User Started Bot:</b>\n"
-            f"User: {user.mention} (`{user.id}`)\n"
+            f"User: {user.first_name} (`{user.id}`)\n"
             f"Username: @{user.username if user.username else 'N/A'}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
@@ -449,157 +450,108 @@ async def help_handler(client: Client, message: Message):
 
 @client.on_message(filters.group & filters.command("lock"))
 async def lock_message_handler(client: Client, message: Message):
-    if len(message.command) < 3:
-        await message.reply_text("गलत फॉर्मेट! कृपया इस तरह इस्तेमाल करें: `/lock <username> <message>` या `/lock <username> <time> <message>`")
+    # Check if sender is an admin
+    if not await is_group_admin(message.chat.id, message.from_user.id):
+        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
-    command_args = message.command[1:]
-    
-    # Check if the last argument is a valid time
-    time_str = command_args[-1] if command_args[-1].endswith(('s', 'm', 'h', 'd')) else None
-    
-    if time_str:
-        # If time is specified, the second-to-last argument is the username
-        mention = command_args[-2]
-        message_to_lock_parts = command_args[:-2]
-    else:
-        # If no time is specified, the last argument is the username
-        mention = command_args[-1]
-        message_to_lock_parts = command_args[:-1]
+    # Check if there is a message to reply to
+    if not message.reply_to_message:
+        await message.reply_text("Kripya ek message ko reply karein jise aap lock karna chahte hain.")
+        return
 
-    if not mention.startswith('@'):
-        await message.reply_text("गलत फॉर्मेट! कृपया यूज़रनेम को `@username` के साथ मेंशन करें।")
+    sender_user = message.from_user
+    locked_text = " ".join(message.command[1:])
+    target_user = None
+
+    if not locked_text:
+        await message.reply_text("Kripya user ko mention karein aur message likhein. Upyog: `/lock <message> <@username>`")
+        return
+
+    # Find the last mention in the message text
+    mentions = re.findall(r'@\w+', locked_text)
+    if not mentions:
+        await message.reply_text("Kripya us user ko mention karein jise aap message dikhana chahte hain.")
         return
     
-    if not message_to_lock_parts:
-        await message.reply_text("आप खाली मैसेज को लॉक नहीं कर सकते।")
-        return
-        
-    message_to_lock = " ".join(message_to_lock_parts)
+    target_mention = mentions[-1]
+    message_content = locked_text.replace(target_mention, "").strip()
     
+    if not message_content:
+        await message.reply_text("Kripya lock karne ke liye message bhi likhein.")
+        return
+
     try:
-        target_user = await client.get_users(mention)
-        target_user_id = target_user.id
-        target_mention = mention
+        target_user = await client.get_users(target_mention)
     except Exception:
-        await message.reply_text("यह एक अमान्य यूज़रनेम है। कृपया एक वैध यूज़र को मेंशन करें।")
+        await message.reply_text("Invalid username. Please mention a valid user.")
         return
 
-    sender_id = message.from_user.id
-    sender_user = await client.get_users(sender_id)
-    sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
-    sender_mention = f"<a href='tg://user?id={sender_id}'>{sender_name}</a>"
-    
     # Store the locked message
-    # We use a unique ID for this instance to avoid conflicts
-    unique_lock_id = f"{message.chat.id}_{message.id}"
-    
-    # Calculate self-destruct time
-    auto_delete_time = None
-    if time_str:
-        if time_str.endswith('s'):
-            duration = int(time_str[:-1])
-            auto_delete_time = datetime.now() + timedelta(seconds=duration)
-        elif time_str.endswith('m'):
-            duration = int(time_str[:-1])
-            auto_delete_time = datetime.now() + timedelta(minutes=duration)
-        elif time_str.endswith('h'):
-            duration = int(time_str[:-1])
-            auto_delete_time = datetime.now() + timedelta(hours=duration)
-        elif time_str.endswith('d'):
-            duration = int(time_str[:-1])
-            auto_delete_time = datetime.now() + timedelta(days=duration)
-
-    LOCKED_MESSAGES[unique_lock_id] = {
-        'text': message_to_lock,
-        'sender_id': sender_id,
-        'target_id': target_user_id,
-        'chat_id': message.chat.id,
-        'auto_delete_time': auto_delete_time
+    # We use a unique ID, for example, the sender's and target's ID
+    lock_id = f"{message.chat.id}_{sender_user.id}_{target_user.id}_{int(time.time())}"
+    LOCKED_MESSAGES[lock_id] = {
+        'text': message_content,
+        'sender_id': sender_user.id,
+        'target_id': target_user.id,
+        'chat_id': message.chat.id
     }
-
+    
     # Delete the original command message
-    try:
-        await message.delete()
-    except Exception as e:
-        logger.error(f"Error deleting original /lock command message: {e}")
+    await message.delete()
+
+    # Get the sender and target names
+    sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
+    target_name = f"{target_user.first_name}{(' ' + target_user.last_name) if target_user.last_name else ''}"
     
     # Send the lock message
-    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Unlock Message 🔓", callback_data=f"show_lock_{unique_lock_id}")]])
+    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Unlock Message", callback_data=f"show_lock_{lock_id}")]])
     
-    lock_message_text = (
-        f"**🔒 Locked Message**\n\n"
-        f"**From:** {sender_mention}\n"
-        f"**To:** {target_mention}\n\n"
-        f"This message is locked for a specific user.\n"
-        f"To unlock, press the button below.\n\n"
-        f"<i>(यह मैसेज केवल {target_mention} देख सकते हैं।)</i>"
-    )
-    
-    sent_message = await client.send_message(
+    # The message as per your request
+    await client.send_message(
         chat_id=message.chat.id,
-        text=lock_message_text,
-        reply_markup=unlock_button,
-        parse_mode=enums.ParseMode.HTML
+        text=f"Hey {target_name}, aapko is {sender_name} ne lock message bheja hai. Message dekhne ke liye niche button par click kare.",
+        reply_markup=unlock_button
     )
-
-    if auto_delete_time:
-        async def auto_delete_task():
-            await asyncio.sleep((auto_delete_time - datetime.now()).total_seconds())
-            try:
-                await client.delete_messages(chat_id=message.chat.id, message_ids=sent_message.id)
-                LOCKED_MESSAGES.pop(unique_lock_id, None)
-            except Exception as e:
-                logger.error(f"Error deleting auto-destruct message: {e}")
-
-        asyncio.create_task(auto_delete_task())
-
+    
 @client.on_callback_query(filters.regex("^show_lock_"))
 async def show_lock_callback_handler(client: Client, query: CallbackQuery):
-    unique_lock_id = query.data.split('_', 2)[-1]
-    locked_message_data = LOCKED_MESSAGES.get(unique_lock_id)
+    lock_id = query.data.split('_', 2)[2]
+    locked_message_data = LOCKED_MESSAGES.get(lock_id)
 
     if not locked_message_data:
-        await query.answer("यह मैसेज अनलॉक हो चुका है या उपलब्ध नहीं है।", show_alert=True)
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
+        await query.answer("This message has been unlocked or is no longer available.", show_alert=True)
         return
 
     user_id = query.from_user.id
     if user_id != locked_message_data['target_id']:
-        await query.answer("यह मैसेज आपके लिए नहीं है।", show_alert=True)
+        await query.answer("This message is not for you.", show_alert=True)
         return
 
-    # Get the sender and target names for the unlocked message
+    # Get the sender and target names
     sender_user = await client.get_users(locked_message_data['sender_id'])
     sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
-    sender_mention = f"<a href='tg://user?id={sender_user.id}'>{sender_name}</a>"
     
-    target_user = await client.get_users(locked_message_data['target_id'])
+    target_user = query.from_user
     target_name = f"{target_user.first_name}{(' ' + target_user.last_name) if target_user.last_name else ''}"
-    target_mention = f"<a href='tg://user?id={target_user.id}'>{target_name}</a>"
 
     # Edit the message to show the content
-    unlocked_text = (
-        f"**🔓 Unlocked Message**\n\n"
-        f"**From:** {sender_mention}\n"
-        f"**To:** {target_mention}\n\n"
+    await query.message.edit_text(
+        f"**🔓 Unlocked Message:**\n\n"
+        f"**From:** {sender_name}\n"
+        f"**To:** {target_name}\n\n"
         f"**Message:**\n"
-        f"<i>{locked_message_data['text']}</i>\n\n"
+        f"{locked_message_data['text']}\n\n"
+        f"This message will self-destruct in 30 seconds."
     )
-    
-    if locked_message_data['auto_delete_time']:
-        remaining_time = locked_message_data['auto_delete_time'] - datetime.now()
-        if remaining_time.total_seconds() > 0:
-            unlocked_text += f"<i>(यह मैसेज {remaining_time.seconds} सेकंड में डिलीट हो जाएगा।)</i>"
 
-    await query.message.edit_text(unlocked_text, parse_mode=enums.ParseMode.HTML)
-    
-    # Remove the message from memory
-    LOCKED_MESSAGES.pop(unique_lock_id)
-
+    # Remove the message from memory and delete it after a timeout
+    LOCKED_MESSAGES.pop(lock_id)
+    await asyncio.sleep(30)
+    try:
+        await query.message.delete()
+    except Exception:
+        pass # Message might have been deleted by another user
 
 # --- Tic Tac Toe Game Logic ---
 TIC_TAC_TOE_BUTTONS = [
@@ -666,6 +618,7 @@ async def tictac_game_start(client: Client, message: Message):
 
     TIC_TAC_TOE_GAMES[chat_id] = {
         'players': {players[0].id: '❌', players[1].id: '⭕'},
+        'player_names': {players[0].id: players[0].first_name, players[1].id: players[1].first_name},
         'board': board,
         'current_turn_id': players[0].id,
         'message_id': None
@@ -673,9 +626,9 @@ async def tictac_game_start(client: Client, message: Message):
     
     # Send the initial game message
     initial_text = f"**Tic Tac Toe (Zero Katte) Game!**\n\n" \
-                   f"**Player 1:** {players[0].mention} (❌)\n" \
-                   f"**Player 2:** {players[1].mention} (⭕)\n\n" \
-                   f"**Current Turn:** {players[0].mention}"
+                   f"**Player 1:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]} (❌)\n" \
+                   f"**Player 2:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[1].id]} (⭕)\n\n" \
+                   f"**Current Turn:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]}"
     
     sent_message = await message.reply_text(
         initial_text,
@@ -717,8 +670,7 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
 
     winner = check_win(board)
     if winner:
-        winner_user = await client.get_users(user_id)
-        winner_name = winner_user.mention
+        winner_name = game_state['player_names'][user_id]
         final_text = f"🎉 **{winner_name} wins the game!** 🎉\n\n" \
                      f"**Final Board:**"
         await query.message.edit_text(
@@ -744,16 +696,12 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
     other_player_id = [p for p in game_state['players'] if p != user_id][0]
     game_state['current_turn_id'] = other_player_id
     
-    other_user = await client.get_users(other_player_id)
-    current_player_mention = other_user.mention
-
-    player1_user = await client.get_users(list(game_state['players'].keys())[0])
-    player2_user = await client.get_users(list(game_state['players'].keys())[1])
+    current_player_name = game_state['player_names'][other_player_id]
 
     updated_text = f"**Tic Tac Toe (Zero Katte) Game!**\n\n" \
-                   f"**Player 1:** {player1_user.mention} (❌)\n" \
-                   f"**Player 2:** {player2_user.mention} (⭕)\n\n" \
-                   f"**Current Turn:** {current_player_mention}"
+                   f"**Player 1:** {game_state['player_names'][list(game_state['players'].keys())[0]]} (❌)\n" \
+                   f"**Player 2:** {game_state['player_names'][list(game_state['players'].keys())[1]]} (⭕)\n\n" \
+                   f"**Current Turn:** {current_player_name}"
 
     await query.message.edit_text(
         updated_text,
@@ -812,9 +760,13 @@ async def configure(client: Client, message: Message):
 
     mode, limit, penalty = get_config_sync(chat_id)
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Bio-Link Settings", callback_data="config_biolink")],
-        [InlineKeyboardButton("Abuse Word Settings", callback_data="config_abuse")],
-        [InlineKeyboardButton("Close", callback_data="close")]
+        [
+            InlineKeyboardButton("Bio-Link Settings", callback_data="config_biolink"),
+            InlineKeyboardButton("Abuse Word Settings", callback_data="config_abuse")
+        ],
+        [
+            InlineKeyboardButton("Close", callback_data="close")
+        ]
     ])
     await client.send_message(
         chat_id,
@@ -849,7 +801,7 @@ async def command_free(client: Client, message: Message):
     reset_warnings_sync(chat_id, target.id)
 
     full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
-    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
+    mention = f"{full_name}"
     text = f"<b>✅ {mention} has been added to the whitelist</b>"
     
     keyboard = InlineKeyboardMarkup([
@@ -882,7 +834,7 @@ async def command_unfree(client: Client, message: Message):
         return await client.send_message(chat_id, "<b>User not found.</b>", parse_mode=enums.ParseMode.HTML)
 
     full_name = f"{target.first_name}{(' ' + target.last_name) if target.last_name else ''}"
-    mention = f"<a href='tg://user?id={target.id}'>{full_name}</a>"
+    mention = f"{full_name}"
 
     if is_whitelisted_sync(chat_id, target.id):
         remove_whitelist_sync(chat_id, target.id)
@@ -1026,7 +978,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 f"Group Name: <code>{chat.title}</code>\n"
                 f"Group ID: <code>{chat.id}</code>\n"
                 f"Members: {await client.get_chat_members_count(chat.id)}\n"
-                f"Added by: {message.from_user.mention} (`{message.from_user.id}`)\n"
+                f"Added by: {message.from_user.first_name} (`{message.from_user.id}`)\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
             await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
@@ -1066,7 +1018,7 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 f"<b>🆕 New Member Joined:</b>\n"
                 f"Group: <code>{chat.title}</code>\n"
                 f"Group ID: <code>{chat.id}</code>\n"
-                f"User: {member.mention} (`{member.id}`)\n"
+                f"User: {member.first_name} (`{member.id}`)\n"
                 f"Username: @{member.username if member.username else 'N/A'}\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
             )
@@ -1128,7 +1080,7 @@ async def left_member_handler(client: Client, message: Message) -> None:
             f"<b>❌ Bot Left Group:</b>\n"
             f"Group Name: <code>{chat.title}</code>\n"
             f"Group ID: <code>{chat.id}</code>\n"
-            f"Removed by: {message.from_user.mention} (`{message.from_user.id}`)\n"
+            f"Removed by: {message.from_user.first_name} (`{message.from_user.id}`)\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
@@ -1138,7 +1090,7 @@ async def left_member_handler(client: Client, message: Message) -> None:
             f"<b>➡️ Member Left:</b>\n"
             f"Group: <code>{chat.title}</code>\n"
             f"Group ID: <code>{chat.id}</code>\n"
-            f"User: {left_member.mention} (`{left_member.id}`)\n"
+            f"User: {left_member.first_name} (`{left_member.id}`)\n"
             f"Username: @{left_member.username if left_member.username else 'N/A'}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
@@ -1352,7 +1304,7 @@ async def tag_admins(client: Client, message: Message) -> None:
         for admin in admins:
             if not admin.user.is_bot:
                 full_name = f"{admin.user.first_name}{(' ' + admin.user.last_name) if admin.user.last_name else ''}"
-                tagged_admins.append(f"👑 <a href='tg://user?id={admin.user.id}'>{full_name}</a>")
+                tagged_admins.append(f"👑 {full_name}")
 
         if not tagged_admins:
             await message.reply_text("Is group mein koi admins nahi hain jinhe tag kiya ja sake.", parse_mode=enums.ParseMode.HTML)
@@ -1601,16 +1553,12 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
 
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_settings_menu', 'toggle_', 'back_to_settings')):
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_settings_menu', 'toggle_', 'back_to_settings', 'tictac_')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
 
         if data == "close":
-            is_current_group_admin = await is_group_admin(chat_id, user_id)
-            if not is_current_group_admin:
-                return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
-            
             try:
                 await query.message.delete()
             except MessageNotModified:
@@ -1648,8 +1596,10 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_biolink")],
-            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_biolink")],
-            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_biolink")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_biolink"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_biolink")
+            ],
             [InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1662,8 +1612,10 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_abuse")],
-            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_abuse")],
-            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_abuse")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_abuse"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_abuse")
+            ],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1710,8 +1662,10 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
-            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}")],
-            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
+            ],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1726,8 +1680,10 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
-            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}")],
-            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")],
+            [
+                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
+                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
+            ],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1749,7 +1705,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.restrict_chat_member(group_chat_id, target_id, ChatPermissions(can_send_messages=True))
             reset_warnings_sync(group_chat_id, target_id)
             user_obj = await client.get_chat_member(group_chat_id, target_id)
-            user_mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
+            user_mention = f"{user_obj.user.first_name}"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Whitelist ✅", callback_data=f"whitelist_{target_id}_{group_chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
             try:
                 await query.message.edit_text(f"<b>✅ {user_mention} unmuted!</b>", reply_markup=kb, parse_mode=enums.ParseMode.HTML)
@@ -1771,7 +1727,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             reset_warnings_sync(group_chat_id, target_id)
             try:
                 user_obj = await client.get_chat_member(group_chat_id, target_id)
-                user_mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
+                user_mention = f"{user_obj.user.first_name}"
             except Exception:
                 user_mention = f"User (`{target_id}`)"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Whitelist ✅", callback_data=f"whitelist_{target_id}_{group_chat_id}"), InlineKeyboardButton("🗑️ Close", callback_data="close")]])
@@ -1791,7 +1747,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         reset_warnings_sync(chat_id, target_id)
         user_obj = await client.get_chat_member(chat_id, target_id)
         full_name = f"{user_obj.user.first_name}{(' ' + user_obj.user.last_name) if user_obj.user.last_name else ''}"
-        mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
+        mention = f"{full_name}"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Whitelist✅", callback_data=f"whitelist_{target_id}_{chat_id}"),
              InlineKeyboardButton("🗑️ Close", callback_data="close")]
@@ -1809,7 +1765,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-            mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
+            mention = f"{full_name}"
         except Exception:
             mention = f"User (`{target_id}`)"
         kb = InlineKeyboardMarkup([
@@ -1828,7 +1784,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             user = await client.get_chat_member(chat_id, target_id)
             full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-            mention = f"<a href='tg://user?id={target_id}'>{full_name}</a>"
+            mention = f"{full_name}"
         except Exception:
             mention = f"User (`{target_id}`)"
         kb = InlineKeyboardMarkup([
@@ -1910,7 +1866,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
         welcome_message = (
-            f"👋 <b>Namaste {query.from_user.mention}!</b>\n\n"
+            f"👋 <b>Namaste {query.from_user.first_name}!</b>\n\n"
             f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
             f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun."
         )
@@ -1934,7 +1890,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         try:
             target_user = await client.get_chat_member(group_chat_id, target_user_id)
-            target_user_mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+            target_user_mention = f"<b>{target_user.user.first_name}</b>"
         except Exception:
             target_user_mention = f"User (`{target_user_id}`)"
 
@@ -1987,7 +1943,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             )
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                mention = f"{target_user.user.first_name}"
                 await query.edit_message_text(f"✅ {mention} को {duration_str} के लिए म्यूट कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} muted user {target_user_id} in chat {group_chat_id} for {duration_str}.")
             except Exception:
@@ -2008,7 +1964,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.ban_chat_member(chat_id=group_chat_id, user_id=target_user_id)
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                mention = f"{target_user.user.first_name}"
                 await query.edit_message_text(f"✅ {mention} को group से ban कर दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} banned user {target_user_id} from chat {group_chat_id}.")
             except Exception:
@@ -2028,7 +1984,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.unban_chat_member(chat_id=group_chat_id, user_id=target_user_id, only_if_banned=False)
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                mention = f"{target_user.user.first_name}"
                 await query.edit_message_text(f"✅ {mention} को group से निकाल दिया गया है।", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {user_id} kicked user {target_user_id} from chat {group_chat_id}.")
             except Exception:
@@ -2052,7 +2008,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         try:
             try:
                 target_user = await client.get_chat_member(group_chat_id, target_user_id)
-                mention = f"<a href='tg://user?id={target_user.user.id}'>{target_user.user.first_name}</a>"
+                mention = f"{target_user.user.first_name}"
             except Exception:
                 mention = f"User (`{target_user_id}`)"
 
@@ -2104,7 +2060,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
 
         try:
             user_obj = await client.get_chat_member(group_chat_id, target_user_id)
-            mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
+            mention = f"<b>{user_obj.user.first_name}</b>"
         except Exception:
             mention = f"User (`{target_user_id}`)"
 
