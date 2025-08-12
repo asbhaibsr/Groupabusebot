@@ -687,7 +687,11 @@ async def add_abuse_word(client: Client, message: Message) -> None:
 
 
 # --- Core Message Handlers (Updated for new settings) ---
-@client.on_message(filters.group & ~filters.service & ~filters.via_bot & ~filters.command(list(client.get_commands().keys()) if client.get_commands() else []))
+@client.on_message(filters.group & ~filters.service & ~filters.via_bot & ~filters.command([
+    "start", "help", "settings", "user", "lock", "tictac", "free", "unfree", 
+    "freelist", "stats", "broadcast", "addabuse", "tagall", "onlinetag", 
+    "admin", "tagstop", "checkperms"
+]))
 async def main_message_handler(client: Client, message: Message):
     if not message.from_user: return
     
