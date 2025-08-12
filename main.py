@@ -28,7 +28,7 @@ API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Yahan par tumhara actual log channel ID daalo
-LOG_CHANNEL_ID = -1002717243409 
+LOG_CHANNEL_ID = -1002717243409
 
 # Yahan par apne bot admin user IDs daalo
 ADMIN_USER_IDS = [7315805581]
@@ -95,7 +95,7 @@ def init_mongodb():
         db.whitelist.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         db.settings.create_index("chat_id", unique=True)
-        
+
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
     except Exception as e:
@@ -125,7 +125,7 @@ async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     if not LOG_CHANNEL_ID:
         logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
         return
-    
+
     try:
         await client.send_message(chat_id=LOG_CHANNEL_ID, text=text, parse_mode=parse_mode)
     except Forbidden:
@@ -156,7 +156,7 @@ def get_group_settings(chat_id):
             "delete_biolink": True,
             "delete_abuse": True,
             "delete_edited": True,
-            "delete_links_usernames": True 
+            "delete_links_usernames": True
         }
     settings = db.settings.find_one({"chat_id": chat_id})
     if not settings:
@@ -165,7 +165,7 @@ def get_group_settings(chat_id):
             "delete_biolink": True,
             "delete_abuse": True,
             "delete_edited": True,
-            "delete_links_usernames": True 
+            "delete_links_usernames": True
         }
         db.settings.insert_one(default_settings)
         return default_settings
@@ -223,7 +223,7 @@ def get_abuse_warnings_sync(user_id: int, chat_id: int):
 def increment_abuse_warning_sync(chat_id, user_id):
     if db is None: return 1
     warnings_doc = db.warnings.find_one_and_update(
-        {"chat_id": chat_id, "user_id": user_id},
+        {"user_id": user_id, "chat_id": chat_id},
         {"$inc": {"abuse_count": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER
@@ -233,7 +233,7 @@ def increment_abuse_warning_sync(chat_id, user_id):
 def reset_abuse_warnings_sync(chat_id, user_id):
     if db is None: return
     db.warnings.update_one(
-        {"chat_id": chat_id},
+        {"chat_id": chat_id, "user_id": user_id},
         {"$set": {"abuse_count": 0}}
     )
 
@@ -260,7 +260,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             f"<i>Please send a new message instead of editing old ones.</i>"
         )
         keyboard = [[InlineKeyboardButton("🗑️ Close", callback_data="close")]]
-    
+
     elif case_type == "abuse_warn":
         abuse_count = get_abuse_warnings_sync(user.id, chat_id)
         notification_text = (
@@ -287,11 +287,11 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
             f"<i>Please avoid sharing links or usernames in the group.</i>"
         )
         keyboard = [[InlineKeyboardButton("🗑️ Close", callback_data="close")]]
-    
+
     elif case_type == "biolink_warn":
         mode, limit, penalty = get_config_sync(chat_id)
         count = increment_warning_sync(chat_id, user.id)
-        
+
         notification_text = (
             "🚨 <b>Bio-Link Detected</b>\n\n"
             f"- <b>User:</b> {user_mention_text}\n"
@@ -304,7 +304,7 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
              InlineKeyboardButton("✅ Whitelist", callback_data=f"whitelist_{user.id}")],
             [InlineKeyboardButton("🗑️ Close", callback_data="close")]
         ]
-        
+
     elif case_type == "biolink_mute":
         notification_text = (
             f"<b>{user_mention_text} ko 🔇 mute kar diya gaya hai (bio mein link ke liye).</b>"
@@ -393,7 +393,7 @@ async def start(client: Client, message: Message) -> None:
                     [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
                     [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
                 ]
-            
+
             reply_markup = InlineKeyboardMarkup(group_keyboard)
 
             await message.reply_text(
@@ -430,7 +430,7 @@ async def help_handler(client: Client, message: Message):
         "`/unfree` – remove from whitelist\n"
         "`/freelist` – list all whitelisted users\n\n"
         "<b>General Moderation Commands:</b>\n"
-        f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n" 
+        f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
         f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
         f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
         f"• <code>/addabuse <shabd></code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
@@ -455,31 +455,24 @@ async def lock_message_handler(client: Client, message: Message):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
-    # Check if there is a message to reply to
-    if not message.reply_to_message:
-        await message.reply_text("Kripya ek message ko reply karein jise aap lock karna chahte hain.")
+    # Check for arguments
+    if len(message.command) < 3:
+        await message.reply_text("Kripya user ko mention karein aur message likhein. Upyog: `/lock <@username> <message>`")
         return
+        
+    target_mention = message.command[1]
+    message_content = " ".join(message.command[2:])
 
-    sender_user = message.from_user
-    locked_text = " ".join(message.command[1:])
-    target_user = None
-
-    if not locked_text:
-        await message.reply_text("Kripya user ko mention karein aur message likhein. Upyog: `/lock <message> <@username>`")
-        return
-
-    # Find the last mention in the message text
-    mentions = re.findall(r'@\w+', locked_text)
-    if not mentions:
+    if not target_mention.startswith('@'):
         await message.reply_text("Kripya us user ko mention karein jise aap message dikhana chahte hain.")
         return
-    
-    target_mention = mentions[-1]
-    message_content = locked_text.replace(target_mention, "").strip()
-    
+
     if not message_content:
         await message.reply_text("Kripya lock karne ke liye message bhi likhein.")
         return
+
+    sender_user = message.from_user
+    target_user = None
 
     try:
         target_user = await client.get_users(target_mention)
@@ -488,7 +481,6 @@ async def lock_message_handler(client: Client, message: Message):
         return
 
     # Store the locked message
-    # We use a unique ID, for example, the sender's and target's ID
     lock_id = f"{message.chat.id}_{sender_user.id}_{target_user.id}_{int(time.time())}"
     LOCKED_MESSAGES[lock_id] = {
         'text': message_content,
@@ -498,19 +490,21 @@ async def lock_message_handler(client: Client, message: Message):
     }
     
     # Delete the original command message
-    await message.delete()
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting lock command message: {e}")
 
     # Get the sender and target names
     sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
     target_name = f"{target_user.first_name}{(' ' + target_user.last_name) if target_user.last_name else ''}"
     
-    # Send the lock message
-    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Unlock Message", callback_data=f"show_lock_{lock_id}")]])
+    # Send the lock message as per your request
+    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Show Message", callback_data=f"show_lock_{lock_id}")]])
     
-    # The message as per your request
     await client.send_message(
         chat_id=message.chat.id,
-        text=f"Hey {target_name}, aapko is {sender_name} ne lock message bheja hai. Message dekhne ke liye niche button par click kare.",
+        text=f"Hey {target_name}, aapko is {sender_name} ne ek lock message bheja hai. Message dekhne ke liye niche button par click kare.",
         reply_markup=unlock_button
     )
     
@@ -529,9 +523,12 @@ async def show_lock_callback_handler(client: Client, query: CallbackQuery):
         return
 
     # Get the sender and target names
-    sender_user = await client.get_users(locked_message_data['sender_id'])
-    sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
-    
+    try:
+        sender_user = await client.get_users(locked_message_data['sender_id'])
+        sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
+    except Exception:
+        sender_name = "Unknown User"
+
     target_user = query.from_user
     target_name = f"{target_user.first_name}{(' ' + target_user.last_name) if target_user.last_name else ''}"
 
@@ -542,12 +539,12 @@ async def show_lock_callback_handler(client: Client, query: CallbackQuery):
         f"**To:** {target_name}\n\n"
         f"**Message:**\n"
         f"{locked_message_data['text']}\n\n"
-        f"This message will self-destruct in 30 seconds."
+        f"This message will self-destruct in 1 minute."
     )
 
     # Remove the message from memory and delete it after a timeout
     LOCKED_MESSAGES.pop(lock_id)
-    await asyncio.sleep(30)
+    await asyncio.sleep(60) # Changed from 30 to 60 seconds (1 minute) as per request
     try:
         await query.message.delete()
     except Exception:
@@ -1553,7 +1550,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
 
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_settings_menu', 'toggle_', 'back_to_settings', 'tictac_')):
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_settings_menu', 'toggle_', 'back_to_settings', 'tictac_', 'show_lock_')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
@@ -1807,7 +1804,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             "<b>• Incident Logging:</b> All violations are logged in a dedicated case channel.\n\n"
             "<b>Commands:</b>\n"
             "• <code>/start</code>: Bot ko start karein (private aur group mein).\n"
-            "• <code>/lock <message> <@username></code> - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
+            "• <code>/lock <@username> <message></code> - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
             "• <code>/tictac @user1 @user2</code> - Do users ke saath Tic Tac Toe game shuru karein. Ek baar mein ek hi game chalega.\n"
             "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n" 
             "• <code>/config</code>: Bio-link protection settings (warn-limit, penalty).\n"
