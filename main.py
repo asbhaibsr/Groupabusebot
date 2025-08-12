@@ -628,46 +628,110 @@ def check_win(board):
 def check_draw(board):
     return all(cell != "➖" for cell in board)
 
-def get_tictac_keyboard(board):
+def get_tictac_keyboard(board, end_game=False):
     keyboard = []
     for i in range(3):
         row = []
         for j in range(3):
             index = i * 3 + j
-            row.append(InlineKeyboardButton(board[index], callback_data=f"tictac_{index}"))
+            row.append(InlineKeyboardButton(board[index], callback_data=f"tictac_{index}" if not end_game else "tictac_noop"))
         keyboard.append(row)
     return InlineKeyboardMarkup(keyboard)
 
 @client.on_message(filters.group & filters.command("tictac"))
-async def tictac_game_start(client: Client, message: Message):
+async def tictac_game_start_command(client: Client, message: Message):
     chat_id = message.chat.id
     if chat_id in TIC_TAC_TOE_GAMES:
         await message.reply_text("Ek Tic Tac Toe game pehle se hi chal raha hai. Kripya uske khatam hone ka intezaar karein.")
         return
+    
+    sender = message.from_user
+    
+    if len(message.command) > 1:
+        mentions = [mention for mention in message.command[1:] if mention.startswith('@')]
+        if len(mentions) != 2:
+            await message.reply_text("Game shuru karne ke liye do users ko mention karein.\nUpyog: `/tictac @user1 @user2`")
+            return
+        
+        try:
+            user1 = await client.get_users(mentions[0])
+            user2 = await client.get_users(mentions[1])
+        except Exception:
+            await message.reply_text("Invalid users. Please mention valid users.")
+            return
 
-    # Check for admin status
-    is_sender_admin = await is_group_admin(chat_id, message.from_user.id)
-    if not is_sender_admin:
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai. Sirf group admins game shuru kar sakte hain.")
+        players = [user1, user2]
+        random.shuffle(players)
+        
+        board = ["➖"] * 9
+        
+        TIC_TAC_TOE_GAMES[chat_id] = {
+            'players': {players[0].id: '❌', players[1].id: '⭕'},
+            'player_names': {players[0].id: players[0].first_name, players[1].id: players[1].first_name},
+            'board': board,
+            'current_turn_id': players[0].id,
+            'message_id': None,
+            'last_active': datetime.now()
+        }
+
+        # Set up inactivity timeout
+        async def inactivity_check():
+            await asyncio.sleep(300) # 5 minutes
+            if chat_id in TIC_TAC_TOE_GAMES and (datetime.now() - TIC_TAC_TOE_GAMES[chat_id]['last_active']).total_seconds() >= 300:
+                await end_tictactoe_game(chat_id)
+                
+        TIC_TAC_TOE_TASK[chat_id] = asyncio.create_task(inactivity_check())
+
+        initial_text = f"**Tic Tac Toe (Zero Katte) Game!**\n\n" \
+                       f"**Player 1:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]} (❌)\n" \
+                       f"**Player 2:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[1].id]} (⭕)\n\n" \
+                       f"**Current Turn:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]}"
+        
+        sent_message = await message.reply_text(
+            initial_text,
+            reply_markup=get_tictac_keyboard(board),
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        
+        TIC_TAC_TOE_GAMES[chat_id]['message_id'] = sent_message.id
+    else:
+        # Start game with one player and a join button
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        
+        await message.reply_text(
+            f"<b>Tic Tac Toe Game Start</b>\n\n"
+            f"<a href='tg://user?id={sender.id}'>{sender.first_name}</a> ne ek Tic Tac Toe game shuru kiya hai!\n"
+            f"Ek aur player ke join karne ka intezaar hai.",
+            reply_markup=keyboard,
+            parse_mode=enums.ParseMode.HTML
+        )
+
+@client.on_callback_query(filters.regex("^tictac_join_game_"))
+async def tictac_join_game(client: Client, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    sender_id = query.from_user.id
+
+    if chat_id in TIC_TAC_TOE_GAMES:
+        await query.answer("Ek game pehle hi chal raha hai.", show_alert=True)
+        return
+
+    # The user who started the game is in the message's text
+    original_message_text = query.message.text
+    starter_user_id = int(re.search(r"tg://user\?id=(\d+)", original_message_text).group(1))
+
+    if sender_id == starter_user_id:
+        await query.answer("Aap pehle se hi player 1 hain. Kripya kisi aur ko join karne dein.", show_alert=True)
         return
     
-    # Parse users
-    mentions = [mention for mention in message.command[1:] if mention.startswith('@')]
-    if len(mentions) != 2:
-        await message.reply_text("Game shuru karne ke liye do users ko mention karein.\nUpyog: `/tictac @user1 @user2`")
-        return
+    starter_user = await client.get_users(starter_user_id)
+    joiner_user = query.from_user
     
-    try:
-        user1 = await client.get_users(mentions[0])
-        user2 = await client.get_users(mentions[1])
-    except Exception:
-        await message.reply_text("Invalid users. Please mention valid users.")
-        return
-
-    players = [user1, user2]
+    players = [starter_user, joiner_user]
     random.shuffle(players)
     
-    current_player_index = 0
     board = ["➖"] * 9
 
     TIC_TAC_TOE_GAMES[chat_id] = {
@@ -678,27 +742,27 @@ async def tictac_game_start(client: Client, message: Message):
         'message_id': None,
         'last_active': datetime.now()
     }
-
-    # Set up inactivity timeout
+    
     async def inactivity_check():
-        await asyncio.sleep(300) # 5 minutes
+        await asyncio.sleep(300)
         if chat_id in TIC_TAC_TOE_GAMES and (datetime.now() - TIC_TAC_TOE_GAMES[chat_id]['last_active']).total_seconds() >= 300:
             await end_tictactoe_game(chat_id)
-            
+    
     TIC_TAC_TOE_TASK[chat_id] = asyncio.create_task(inactivity_check())
-
+    
     initial_text = f"**Tic Tac Toe (Zero Katte) Game!**\n\n" \
                    f"**Player 1:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]} (❌)\n" \
                    f"**Player 2:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[1].id]} (⭕)\n\n" \
                    f"**Current Turn:** {TIC_TAC_TOE_GAMES[chat_id]['player_names'][players[0].id]}"
-    
-    sent_message = await message.reply_text(
+
+    # Edit the message to start the game
+    await query.message.edit_text(
         initial_text,
         reply_markup=get_tictac_keyboard(board),
         parse_mode=enums.ParseMode.MARKDOWN
     )
     
-    TIC_TAC_TOE_GAMES[chat_id]['message_id'] = sent_message.id
+    TIC_TAC_TOE_GAMES[chat_id]['message_id'] = query.message.id
 
 @client.on_callback_query(filters.regex("^tictac_"))
 async def tictac_game_play(client: Client, query: CallbackQuery):
@@ -719,7 +783,12 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         await query.answer(f"It's not your turn, {player_name}!", show_alert=True)
         return
 
-    button_index = int(query.data.split('_')[1])
+    button_index_str = query.data.split('_')[1]
+    if button_index_str == 'noop':
+        await query.answer("Game khatam ho chuka hai, kripya naya game shuru karein.", show_alert=True)
+        return
+
+    button_index = int(button_index_str)
     board = game_state['board']
     
     if board[button_index] != "➖":
@@ -732,7 +801,9 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
 
     # Reset inactivity timer
     game_state['last_active'] = datetime.now()
-    TIC_TAC_TOE_TASK[chat_id].cancel()
+    if chat_id in TIC_TAC_TOE_TASK:
+        TIC_TAC_TOE_TASK[chat_id].cancel()
+
     async def inactivity_check():
         await asyncio.sleep(300)
         if chat_id in TIC_TAC_TOE_GAMES and (datetime.now() - TIC_TAC_TOE_GAMES[chat_id]['last_active']).total_seconds() >= 300:
@@ -744,9 +815,15 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         winner_name = game_state['player_names'][user_id]
         final_text = f"🎉 **{winner_name} wins the game!** 🎉\n\n" \
                      f"**Final Board:**"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
+            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        
         await query.message.edit_text(
             final_text,
-            reply_markup=get_tictac_keyboard(board),
+            reply_markup=keyboard,
             parse_mode=enums.ParseMode.MARKDOWN
         )
         del TIC_TAC_TOE_GAMES[chat_id]
@@ -755,9 +832,15 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
     if check_draw(board):
         final_text = "🤝 **Game is a draw!** 🤝\n\n" \
                      "**Final Board:**"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Try Again", callback_data="tictac_try_again")],
+            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        
         await query.message.edit_text(
             final_text,
-            reply_markup=get_tictac_keyboard(board),
+            reply_markup=keyboard,
             parse_mode=enums.ParseMode.MARKDOWN
         )
         del TIC_TAC_TOE_GAMES[chat_id]
@@ -780,6 +863,28 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         parse_mode=enums.ParseMode.MARKDOWN
     )
     
+@client.on_callback_query(filters.regex("^tictac_try_again"))
+async def tictac_try_again(client: Client, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if chat_id in TIC_TAC_TOE_GAMES:
+        await query.answer("Ek game pehle se hi chal raha hai. Kripya uske khatam hone ka intezaar karein.", show_alert=True)
+        return
+
+    starter = query.from_user
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+        [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+    ])
+    
+    await query.message.edit_text(
+        f"<b>Tic Tac Toe Game Start</b>\n\n"
+        f"<a href='tg://user?id={starter.id}'>{starter.first_name}</a> ne ek Tic Tac Toe game shuru kiya hai!\n"
+        f"Ek aur player ke join karne ka intezaar hai.",
+        reply_markup=keyboard,
+        parse_mode=enums.ParseMode.HTML
+    )
+
 @client.on_message(filters.group & filters.command("settings"))
 async def settings_command_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -885,7 +990,7 @@ async def show_game_settings(client, message):
                        "Yahan aap games se related settings dekh sakte hain."
                        
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Tic Tac Toe Game", callback_data="start_tictactoe_from_settings")],
+        [InlineKeyboardButton("Tic Tac Toe Game Start", callback_data="start_tictactoe_from_settings")],
         [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
     ])
     
@@ -1076,7 +1181,7 @@ async def add_abuse_word(client: Client, message: Message) -> None:
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
             else:
-                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se hi list mein maujood hai\\.", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se ही list mein maujood hai\\.", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             await message.reply_text(f"Shabd jodte samay error hui: {e}")
             logger.error(f"Error adding abuse word {word_to_add}: {e}")
@@ -1366,7 +1471,25 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         return
 
     if data == "start_tictactoe_from_settings":
-        await query.message.edit_text("कृपया दो खिलाड़ियों को टैग करके गेम शुरू करें।\nउदाहरण: `/tictac @user1 @user2`")
+        user_id = query.from_user.id
+        user = query.from_user
+        
+        if chat_id in TIC_TAC_TOE_GAMES:
+            await query.answer("Ek game pehle se hi chal raha hai.", show_alert=True)
+            return
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Join Game (❌)", callback_data=f"tictac_join_game_0")],
+            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+        ])
+        
+        await query.message.edit_text(
+            f"<b>Tic Tac Toe Game Start</b>\n\n"
+            f"<a href='tg://user?id={user.id}'>{user.first_name}</a> ne ek Tic Tac Toe game shuru kiya hai!\n"
+            f"Ek aur player ke join karne ka intezaar hai.",
+            reply_markup=keyboard,
+            parse_mode=enums.ParseMode.HTML
+        )
         return
         
     if data.startswith("unmute_"):
@@ -1485,7 +1608,7 @@ async def tag_all(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "सभी members ko tag kiya ja raha hai!"
     
     try:
         members_to_tag = []
@@ -1580,7 +1703,7 @@ async def online_tag(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Online members ko tag kiya ja raha hai!"
 
     try:
         online_members_to_tag = []
@@ -1755,21 +1878,28 @@ async def tag_stop(client: Client, message: Message) -> None:
 @client.on_message(filters.command("checkperms") & filters.group)
 async def check_permissions(client: Client, message: Message):
     chat = message.chat
-
+    bot_id = client.me.id
+    
     if not await is_group_admin(chat.id, message.from_user.id):
         await message.reply_text("आप ग्रुप एडमिन नहीं हैं, इसलिए आप यह कमांड का उपयोग नहीं कर सकते।")
         return
 
     try:
-        bot_member = await client.get_chat_member(chat.id, client.me.id)
+        bot_member = await client.get_chat_member(chat.id, bot_id)
+        if not bot_member.privileges:
+            await message.reply_text(
+                "Bot is not an admin in this group. Please make the bot an admin to use this feature."
+            )
+            return
+
         perms = bot_member.privileges
 
         message_text = (
             f"<b>{chat.title}</b> में बॉट की अनुमतियाँ (Permissions):\n\n"
-            f"<b>✅ मैसेज हटा सकता है:</b> {perms.can_delete_messages}\n"
-            f"<b>✅ सदस्यों को प्रतिबंधित कर सकता है:</b> {perms.can_restrict_members}\n"
-            f"<b>✅ मैसेज पिन कर सकता है:</b> {perms.can_pin_messages}\n"
-            f"<b>✅ मैसेज भेज सकता है:</b> {perms.can_post_messages}\n"
+            f"<b>✅ मैसेज हटा सकता है:</b> {'✅ Yes' if perms.can_delete_messages else '❌ No'}\n"
+            f"<b>✅ सदस्यों को प्रतिबंधित कर सकता है:</b> {'✅ Yes' if perms.can_restrict_members else '❌ No'}\n"
+            f"<b>✅ मैसेज पिन कर सकता है:</b> {'✅ Yes' if perms.can_pin_messages else '❌ No'}\n"
+            f"<b>✅ मैसेज भेज सकता है:</b> {'✅ Yes' if perms.can_post_messages else '❌ No'}\n"
         )
 
         await message.reply_text(message_text, parse_mode=enums.ParseMode.HTML)
