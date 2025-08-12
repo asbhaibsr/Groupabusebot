@@ -738,7 +738,7 @@ async def edited_message_handler(client: Client, message: Message):
     if settings["edited"].get("enabled"):
         await handle_incident(client, chat_id, user, "edited", message, {})
 
-@client.on_new_chat_members()
+@client.on_message(filters.new_chat_members)
 async def new_member_handler(client: Client, message: Message):
     chat_id = message.chat.id
     bot_info = await client.get_me()
@@ -766,7 +766,7 @@ async def new_member_handler(client: Client, message: Message):
             except Exception as e:
                 logger.error(f"Error checking bio for new member {new_member.id}: {e}")
 
-@client.on_left_chat_member()
+@client.on_message(filters.left_chat_member)
 async def left_member_handler(client: Client, message: Message):
     if message.left_chat_member.id == client.me.id:
         if db is not None: db.groups.delete_one({"chat_id": message.chat.id})
