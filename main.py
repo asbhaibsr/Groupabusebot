@@ -449,96 +449,157 @@ async def help_handler(client: Client, message: Message):
 
 @client.on_message(filters.group & filters.command("lock"))
 async def lock_message_handler(client: Client, message: Message):
-    if not message.reply_to_message:
-        await message.reply_text("Kripya ek message ko reply karein jise aap lock karna chahte hain.")
+    if len(message.command) < 3:
+        await message.reply_text("गलत फॉर्मेट! कृपया इस तरह इस्तेमाल करें: `/lock <username> <message>` या `/lock <username> <time> <message>`")
+        return
+
+    command_args = message.command[1:]
+    
+    # Check if the last argument is a valid time
+    time_str = command_args[-1] if command_args[-1].endswith(('s', 'm', 'h', 'd')) else None
+    
+    if time_str:
+        # If time is specified, the second-to-last argument is the username
+        mention = command_args[-2]
+        message_to_lock_parts = command_args[:-2]
+    else:
+        # If no time is specified, the last argument is the username
+        mention = command_args[-1]
+        message_to_lock_parts = command_args[:-1]
+
+    if not mention.startswith('@'):
+        await message.reply_text("गलत फॉर्मेट! कृपया यूज़रनेम को `@username` के साथ मेंशन करें।")
+        return
+    
+    if not message_to_lock_parts:
+        await message.reply_text("आप खाली मैसेज को लॉक नहीं कर सकते।")
+        return
+        
+    message_to_lock = " ".join(message_to_lock_parts)
+    
+    try:
+        target_user = await client.get_users(mention)
+        target_user_id = target_user.id
+        target_mention = mention
+    except Exception:
+        await message.reply_text("यह एक अमान्य यूज़रनेम है। कृपया एक वैध यूज़र को मेंशन करें।")
         return
 
     sender_id = message.from_user.id
-    target_user_id = None
-    target_mention = None
-
-    if len(message.command) > 1:
-        mention = message.command[-1]
-        if mention.startswith('@'):
-            try:
-                target_user = await client.get_users(mention)
-                target_user_id = target_user.id
-                target_mention = mention
-            except Exception:
-                await message.reply_text("Invalid username. Please mention a valid user.")
-                return
-        else:
-            await message.reply_text("Invalid format. Please use `@username`.")
-            return
-    else:
-        await message.reply_text("Kripya mention karein us user ko jise aap message dikhana chahte hain.\nUpyog: `/lock @username`")
-        return
-
-    # Extract the message to be locked
-    locked_text = " ".join(message.command[1:-1])
-    
-    # Store the locked message
-    message_id = message.reply_to_message.id
-    LOCKED_MESSAGES[message_id] = {
-        'text': locked_text,
-        'sender_id': sender_id,
-        'target_id': target_user_id,
-        'chat_id': message.chat.id
-    }
-    
-    # Delete the original messages
-    await message.reply_to_message.delete()
-    await message.delete()
-
-    # Get the sender and target names
     sender_user = await client.get_users(sender_id)
     sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
+    sender_mention = f"<a href='tg://user?id={sender_id}'>{sender_name}</a>"
+    
+    # Store the locked message
+    # We use a unique ID for this instance to avoid conflicts
+    unique_lock_id = f"{message.chat.id}_{message.id}"
+    
+    # Calculate self-destruct time
+    auto_delete_time = None
+    if time_str:
+        if time_str.endswith('s'):
+            duration = int(time_str[:-1])
+            auto_delete_time = datetime.now() + timedelta(seconds=duration)
+        elif time_str.endswith('m'):
+            duration = int(time_str[:-1])
+            auto_delete_time = datetime.now() + timedelta(minutes=duration)
+        elif time_str.endswith('h'):
+            duration = int(time_str[:-1])
+            auto_delete_time = datetime.now() + timedelta(hours=duration)
+        elif time_str.endswith('d'):
+            duration = int(time_str[:-1])
+            auto_delete_time = datetime.now() + timedelta(days=duration)
+
+    LOCKED_MESSAGES[unique_lock_id] = {
+        'text': message_to_lock,
+        'sender_id': sender_id,
+        'target_id': target_user_id,
+        'chat_id': message.chat.id,
+        'auto_delete_time': auto_delete_time
+    }
+
+    # Delete the original command message
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting original /lock command message: {e}")
     
     # Send the lock message
-    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Show Locked Message", callback_data=f"show_lock_{message_id}")]])
-    await client.send_message(
-        chat_id=message.chat.id,
-        text=f"**🔒 Lock Message:**\n\n"
-             f"This message is locked for a specific user.\n"
-             f"To unlock, press the button below.",
-        reply_markup=unlock_button
+    unlock_button = InlineKeyboardMarkup([[InlineKeyboardButton("Unlock Message 🔓", callback_data=f"show_lock_{unique_lock_id}")]])
+    
+    lock_message_text = (
+        f"**🔒 Locked Message**\n\n"
+        f"**From:** {sender_mention}\n"
+        f"**To:** {target_mention}\n\n"
+        f"This message is locked for a specific user.\n"
+        f"To unlock, press the button below.\n\n"
+        f"<i>(यह मैसेज केवल {target_mention} देख सकते हैं।)</i>"
     )
     
+    sent_message = await client.send_message(
+        chat_id=message.chat.id,
+        text=lock_message_text,
+        reply_markup=unlock_button,
+        parse_mode=enums.ParseMode.HTML
+    )
+
+    if auto_delete_time:
+        async def auto_delete_task():
+            await asyncio.sleep((auto_delete_time - datetime.now()).total_seconds())
+            try:
+                await client.delete_messages(chat_id=message.chat.id, message_ids=sent_message.id)
+                LOCKED_MESSAGES.pop(unique_lock_id, None)
+            except Exception as e:
+                logger.error(f"Error deleting auto-destruct message: {e}")
+
+        asyncio.create_task(auto_delete_task())
+
 @client.on_callback_query(filters.regex("^show_lock_"))
 async def show_lock_callback_handler(client: Client, query: CallbackQuery):
-    message_id = int(query.data.split('_')[2])
-    locked_message_data = LOCKED_MESSAGES.get(message_id)
+    unique_lock_id = query.data.split('_', 2)[-1]
+    locked_message_data = LOCKED_MESSAGES.get(unique_lock_id)
 
     if not locked_message_data:
-        await query.answer("This message has been unlocked or is no longer available.", show_alert=True)
+        await query.answer("यह मैसेज अनलॉक हो चुका है या उपलब्ध नहीं है।", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         return
 
     user_id = query.from_user.id
     if user_id != locked_message_data['target_id']:
-        await query.answer("This message is not for you.", show_alert=True)
+        await query.answer("यह मैसेज आपके लिए नहीं है।", show_alert=True)
         return
 
-    # Get the sender and target names
+    # Get the sender and target names for the unlocked message
     sender_user = await client.get_users(locked_message_data['sender_id'])
     sender_name = f"{sender_user.first_name}{(' ' + sender_user.last_name) if sender_user.last_name else ''}"
+    sender_mention = f"<a href='tg://user?id={sender_user.id}'>{sender_name}</a>"
     
     target_user = await client.get_users(locked_message_data['target_id'])
-    target_mention = target_user.mention
+    target_name = f"{target_user.first_name}{(' ' + target_user.last_name) if target_user.last_name else ''}"
+    target_mention = f"<a href='tg://user?id={target_user.id}'>{target_name}</a>"
 
     # Edit the message to show the content
-    await query.message.edit_text(
-        f"**🔓 Unlocked Message:**\n\n"
-        f"**From:** {sender_name}\n"
+    unlocked_text = (
+        f"**🔓 Unlocked Message**\n\n"
+        f"**From:** {sender_mention}\n"
         f"**To:** {target_mention}\n\n"
         f"**Message:**\n"
-        f"{locked_message_data['text']}\n\n"
-        f"This message will self-destruct in 30 seconds."
+        f"<i>{locked_message_data['text']}</i>\n\n"
     )
+    
+    if locked_message_data['auto_delete_time']:
+        remaining_time = locked_message_data['auto_delete_time'] - datetime.now()
+        if remaining_time.total_seconds() > 0:
+            unlocked_text += f"<i>(यह मैसेज {remaining_time.seconds} सेकंड में डिलीट हो जाएगा।)</i>"
 
-    # Remove the message from memory and delete it after a timeout
-    LOCKED_MESSAGES.pop(message_id)
-    await asyncio.sleep(30)
-    await query.message.delete()
+    await query.message.edit_text(unlocked_text, parse_mode=enums.ParseMode.HTML)
+    
+    # Remove the message from memory
+    LOCKED_MESSAGES.pop(unique_lock_id)
+
 
 # --- Tic Tac Toe Game Logic ---
 TIC_TAC_TOE_BUTTONS = [
@@ -686,9 +747,12 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
     other_user = await client.get_users(other_player_id)
     current_player_mention = other_user.mention
 
+    player1_user = await client.get_users(list(game_state['players'].keys())[0])
+    player2_user = await client.get_users(list(game_state['players'].keys())[1])
+
     updated_text = f"**Tic Tac Toe (Zero Katte) Game!**\n\n" \
-                   f"**Player 1:** {list(game_state['players'].keys())[0]} (❌)\n" \
-                   f"**Player 2:** {list(game_state['players'].keys())[1]} (⭕)\n\n" \
+                   f"**Player 1:** {player1_user.mention} (❌)\n" \
+                   f"**Player 2:** {player2_user.mention} (⭕)\n\n" \
                    f"**Current Turn:** {current_player_mention}"
 
     await query.message.edit_text(
@@ -748,13 +812,9 @@ async def configure(client: Client, message: Message):
 
     mode, limit, penalty = get_config_sync(chat_id)
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Bio-Link Settings", callback_data="config_biolink"),
-            InlineKeyboardButton("Abuse Word Settings", callback_data="config_abuse")
-        ],
-        [
-            InlineKeyboardButton("Close", callback_data="close")
-        ]
+        [InlineKeyboardButton("Bio-Link Settings", callback_data="config_biolink")],
+        [InlineKeyboardButton("Abuse Word Settings", callback_data="config_abuse")],
+        [InlineKeyboardButton("Close", callback_data="close")]
     ])
     await client.send_message(
         chat_id,
@@ -1588,10 +1648,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_biolink")],
-            [
-                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_biolink"),
-                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_biolink")
-            ],
+            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_biolink")],
+            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_biolink")],
             [InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1604,10 +1662,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data="warn_limit_abuse")],
-            [
-                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_abuse"),
-                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_abuse")
-            ],
+            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data="mute_abuse")],
+            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data="ban_abuse")],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1654,10 +1710,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
-            [
-                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
-                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
-            ],
+            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}")],
+            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -1672,10 +1726,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         mode, limit, penalty = get_config_sync(chat_id)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Warn Limit", callback_data=f"warn_limit_{source}")],
-            [
-                InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}"),
-                InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")
-            ],
+            [InlineKeyboardButton("Mute ✅" if penalty == "mute" else "Mute", callback_data=f"mute_{source}")],
+            [InlineKeyboardButton("Ban ✅" if penalty == "ban" else "Ban", callback_data=f"ban_{source}")],
             [InlineKeyboardButton("Back", callback_data="back_from_config"), InlineKeyboardButton("Close", callback_data="close")]
         ])
         try:
@@ -2015,171 +2067,4 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await client.send_message(chat_id=group_chat_id, text=warn_message, parse_mode=enums.ParseMode.HTML)
 
             if warn_count >= 3:
-                permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False)
-                await client.restrict_chat_member(
-                    chat_id=group_chat_id,
-                    user_id=target_user_id,
-                    permissions=permissions
-                )
-                permanent_mute_message = (
-                    f"❌ <b>Permanent Mute</b> ❌\n\n"
-                    f"➡️ {mention}, aapko 3 warnings mil chuki hain. Isliye aapko group mein permanent mute kar diya gaya hai."
-                )
-                await client.send_message(chat_id=group_chat_id, text=permanent_mute_message, parse_mode=enums.ParseMode.HTML)
-                try:
-                    await query.message.edit_text(f"✅ {mention} ko {warn_count} chetavniyan milne ke baad permanent mute kar diya gaya hai।", parse_mode=enums.ParseMode.HTML)
-                except MessageNotModified:
-                    pass
-                logger.info(f"User {target_user_id} was permanently muted after 3 warnings in chat {group_chat_id}.")
-            else:
-                try:
-                    await query.message.edit_text(f"✅ {mention} ko chetavni bhej di gai hai. Warnings: {warn_count}/3.", parse_mode=enums.ParseMode.HTML)
-                except MessageNotModified:
-                    pass
-            logger.info(f"Admin {user_id} warned user {target_user_id} in chat {group_chat_id}. Current warnings: {warn_count}.")
-
-        except Exception as e:
-            try:
-                await query.message.edit_text(f"Chetavni bhejte samay error hui: {e}")
-            except MessageNotModified:
-                pass
-            logger.error(f"Error warning user {target_user_id} in {group_chat_id}: {e}")
-
-    elif data.startswith("back_to_notification_"):
-        parts = data.split('_')
-        target_user_id = int(parts[3])
-        group_chat_id = int(parts[4])
-
-        try:
-            user_obj = await client.get_chat_member(group_chat_id, target_user_id)
-            mention = f"<a href='tg://user?id={user_obj.user.id}'>{user_obj.user.first_name}</a>"
-        except Exception:
-            mention = f"User (`{target_user_id}`)"
-
-        notification_message = (
-            f"🚨 <b>नियम उल्लंघन</b> 🚨\n\n"
-            f"<b>👤 यूज़र:</b> {mention}\n"
-            f"<b>📝 कारण:</b> (पिछला उल्लंघन)\n\n"
-            f"<b>⏰ समय:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
-        )
-
-        keyboard = [
-            [
-                InlineKeyboardButton("🔧 Admin Actions", callback_data=f"admin_actions_menu_{target_user_id}_{group_chat_id}")
-            ],
-            [
-            ]
-        ]
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.message.edit_text(notification_message, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
-        except MessageNotModified:
-            pass
-
-    if data == "confirm_broadcast":
-        admin_id = query.from_user.id
-        message_to_broadcast = BROADCAST_MESSAGE.get(admin_id)
-
-        if not message_to_broadcast:
-            await query.message.edit_text("Broadcast message not found. Please try again.")
-            return
-
-        try:
-            await query.message.edit_text("📢 Broadcast शुरू हो रहा है...")
-        except MessageNotModified:
-            pass
-
-        if db is None:
-            await query.message.reply_text("Database connection उपलब्ध नहीं है, Broadcast नहीं कर सकते।")
-            return
-
-        all_chats = []
-        if db.groups is not None:
-            try:
-                groups = db.groups.find({})
-                for group in groups:
-                    all_chats.append(group.get("chat_id"))
-            except Exception as e:
-                logger.error(f"Error fetching groups from DB for broadcast: {e}")
-
-        if db.users is not None:
-            try:
-                users = db.users.find({})
-                for user in users:
-                    all_chats.append(user.get("user_id"))
-            except Exception as e:
-                logger.error(f"Error fetching users from DB for broadcast: {e}")
-
-        success_count = 0
-        fail_count = 0
-        total_chats = len(all_chats)
-
-        for i, chat_id in enumerate(all_chats):
-            try:
-                await client.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=message_to_broadcast.chat.id,
-                    message_id=message_to_broadcast.id
-                )
-                success_count += 1
-            except FloodWait as e:
-                logger.warning(f"Broadcast: FloodWait error. Sleeping for {e.value} seconds.")
-                await asyncio.sleep(e.value)
-                try:
-                    await client.copy_message(
-                        chat_id=chat_id,
-                        from_chat_id=message_to_broadcast.chat.id,
-                        message_id=message_to_broadcast.id
-                    )
-                    success_count += 1
-                except Exception as e_retry:
-                    logger.error(f"Broadcast retry failed for {chat_id}: {e_retry}")
-                    fail_count += 1
-            except Exception as e:
-                logger.error(f"Failed to broadcast to chat {chat_id}: {e}")
-                fail_count += 1
-            
-            if (i + 1) % 10 == 0 or (i + 1) == total_chats:
-                try:
-                    await query.message.edit_text(f"📢 Broadcast चल रहा है...\n\nसफलतापूर्वक भेजा गया: {success_count}/{total_chats}\nविफल: {fail_count}/{total_chats}", parse_mode=enums.ParseMode.HTML)
-                except MessageNotModified:
-                    pass
-
-        report_text = f"✅ Broadcast pura hua!\n\nसफलतापूर्वक भेजा गया: {success_count} चैट में\nविफल: {fail_count} चैट में"
-        try:
-            await query.message.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
-        except MessageNotModified:
-            pass
-        BROADCAST_MESSAGE.pop(admin_id, None)
-        logger.info(f"Admin {admin_id} successfully broadcasted message to {success_count} chats.")
-
-    if data == "cancel_broadcast":
-        await query.message.edit_text("Broadcast cancelled.")
-        user_id = query.from_user.id
-        if BROADCAST_MESSAGE.get(user_id):
-            BROADCAST_MESSAGE.pop(user_id)
-
-
-# --- Flask App for Health Check ---
-@app.route('/')
-def health_check():
-    """Simple health check endpoint for Koyeb."""
-    return jsonify({"status": "healthy", "bot_running": True, "mongodb_connected": db is not None}), 200
-
-def run_flask_app():
-    """Runs the Flask application."""
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
-
-# --- Entry Point ---
-if __name__ == "__main__":
-    init_mongodb()
-
-    flask_thread = threading.Thread(target=run_flask_app)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    logger.info("Bot is starting...")
-    client.run()
-    logger.info("Bot stopped")
+                permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls
