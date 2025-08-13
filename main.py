@@ -28,7 +28,7 @@ API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Yahan par tumhara actual log channel ID daalo
-LOG_CHANNEL_ID = -1002717243409
+LOG_CHANNEL_ID = -1002717243400
 
 # Yahan par apne bot admin user IDs daalo
 ADMIN_USER_IDS = [7315805581]
