@@ -12,7 +12,7 @@ from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions, BotCommand
 )
-from pyrogram.errors import BadRequest, Forbidden, MessageNotModified, FloodWait
+from pyrogram.errors import BadRequest, Forbidden, MessageNotModified, FloodWait, UserIsBlocked, ChatAdminRequired
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -28,7 +28,7 @@ API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Yahan par tumhara actual log channel ID daalo
-LOG_CHANNEL_ID = -1002717243409
+LOG_CHANNEL_ID = -1002352329534
 
 # Yahan par apne bot admin user IDs daalo
 ADMIN_USER_IDS = [7315805581]
@@ -400,7 +400,8 @@ async def help_handler(client: Client, message: Message):
         "• <code>/tagall <message></code>: Sabhi members ko tag karein.\n"
         "• <code>/onlinetag <message></code>: Online members ko tag karein.\n"
         "• <code>/admin <message></code>: Sirf group admins ko tag karein.\n"
-        "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
+        "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n"
+        "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
         "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
         " 1. ⚠️ Warn them\n"
         " 2. 🔇 Mute if they exceed limit\n"
@@ -1212,6 +1213,86 @@ async def add_abuse_word(client: Client, message: Message) -> None:
         logger.error("Profanity filter not initialized, cannot add abuse word.")
 
 
+# --- NEW COMMAND ---
+@client.on_message(filters.command("cleartempdata") & filters.user(ADMIN_USER_IDS))
+async def clear_temp_data(client: Client, message: Message):
+    """Clears temporary in-memory data and stale database entries."""
+    if not is_admin(message.from_user.id):
+        return
+
+    status_msg = await message.reply_text("🧹 Safai shuru ho rahi hai... Kripya intezaar karein.")
+    
+    # 1. Clear in-memory data
+    in_memory_cleared = {
+        "Tagging Tasks": len(ONGOING_TAGGING_TASKS),
+        "Tagging Messages": len(TAG_MESSAGES),
+        "Tic Tac Toe Games": len(TIC_TAC_TOE_GAMES),
+        "Locked Messages": len(LOCKED_MESSAGES),
+        "Secret Chats": len(SECRET_CHATS),
+    }
+    ONGOING_TAGGING_TASKS.clear()
+    TAG_MESSAGES.clear()
+    TIC_TAC_TOE_GAMES.clear()
+    LOCKED_MESSAGES.clear()
+    SECRET_CHATS.clear()
+
+    report_text = "<b>📊 Safai Report</b>\n\n"
+    report_text += "<b>In-Memory Data Cleared:</b>\n"
+    for key, value in in_memory_cleared.items():
+        if value > 0:
+            report_text += f"• {key}: {value} entries\n"
+    
+    logger.info(f"Admin {message.from_user.id} cleared in-memory data.")
+
+    # 2. Clean database
+    if db is None:
+        report_text += "\n⚠️ MongoDB se connect nahi ho paya, isliye database saaf nahi hua."
+        await status_msg.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
+        return
+
+    await status_msg.edit_text("🧠 In-memory data saaf ho gaya hai. Ab database check kiya jaa raha hai...")
+
+    inactive_groups = 0
+    total_groups = 0
+    try:
+        group_ids = [g["chat_id"] for g in db.groups.find({}, {"chat_id": 1})]
+        total_groups = len(group_ids)
+        
+        for i, chat_id in enumerate(group_ids):
+            if i % 20 == 0: # Update status every 20 checks
+                await status_msg.edit_text(f"🔍 Database check ho raha hai... [{i}/{total_groups}]")
+            
+            try:
+                # This call will fail if the bot is not in the chat
+                await client.get_chat(chat_id)
+                await asyncio.sleep(0.1) # Be gentle with the API
+            except (Forbidden, BadRequest, ChatAdminRequired, ValueError) as e:
+                # ValueError can happen for invalid chat_id format, good to catch
+                logger.warning(f"Bot is no longer in chat {chat_id} or cannot access it ({type(e).__name__}). Deleting related data.")
+                
+                # Delete all data associated with this chat_id
+                db.groups.delete_one({"chat_id": chat_id})
+                db.settings.delete_one({"chat_id": chat_id})
+                db.warn_settings.delete_one({"chat_id": chat_id})
+                db.whitelist.delete_many({"chat_id": chat_id})
+                db.warnings.delete_many({"chat_id": chat_id})
+                
+                inactive_groups += 1
+                
+        report_text += "\n<b>Database Data Cleared:</b>\n"
+        report_text += f"• Kul groups check kiye gaye: {total_groups}\n"
+        report_text += f"• Inactive groups ka data hataya gaya: {inactive_groups}\n"
+        
+        logger.info(f"Database cleanup complete. Removed {inactive_groups} inactive groups.")
+
+    except Exception as e:
+        logger.error(f"Error during database cleanup: {e}")
+        report_text += f"\n❌ Database saaf karte samay ek error aayi: `{e}`"
+
+    report_text += "\n\n✅ Safai poori hui!"
+    await status_msg.edit_text(report_text, parse_mode=enums.ParseMode.HTML)
+
+
 @client.on_message(filters.new_chat_members)
 async def welcome_new_member(client: Client, message: Message) -> None:
     new_members = message.new_chat_members
@@ -1307,6 +1388,7 @@ async def left_member_handler(client: Client, message: Message) -> None:
         )
         await log_to_channel(log_message, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Bot was removed from group: {chat.title} ({chat.id}) by {message.from_user.id}.")
+        # No need to delete from DB here, /cleartempdata will handle it.
     else:
         log_message = (
             f"<b>➡️ Member Left:</b>\n"
@@ -1432,7 +1514,8 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             "• <code>/tagall <message></code>: Sabhi members ko tag karein.\n"
             "• <code>/onlinetag <message></code>: Online members ko tag karein.\n"
             "• <code>/admin <message></code>: Sirf group admins ko tag karein.\n"
-            "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
+            "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n"
+            "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
             "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
             " 1. ⚠️ Warn them\n"
             " 2. 🔇 Mute if they exceed limit\n"
@@ -1697,20 +1780,31 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         await query.message.edit_text(text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
     
 
-# --- Tagging Commands ---
+# --- Tagging Commands (IMPROVED) ---
 @client.on_message(filters.command("tagall") & filters.group)
 async def tag_all(client: Client, message: Message) -> None:
-    is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
-    if not is_sender_admin:
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if not await is_group_admin(chat_id, user_id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
-    chat_id = message.chat.id
     if chat_id in ONGOING_TAGGING_TASKS:
-        await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
+        await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के liye /tagstop ka upyog karein.")
         return
 
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+    
+    try:
+        # Check if bot has necessary permissions
+        bot_member = await client.get_chat_member(chat_id, client.me.id)
+        if not bot_member.privileges or not bot_member.privileges.can_delete_messages:
+            await message.reply_text("Bot needs admin privileges with 'Delete Messages' permission to use this command properly (for /tagstop).")
+    except Exception as e:
+        logger.warning(f"Could not check bot permissions in {chat_id}: {e}")
+
+    logger.info(f"Starting tagall command in chat {chat_id} by user {user_id}")
     
     try:
         members_to_tag = []
@@ -1720,10 +1814,12 @@ async def tag_all(client: Client, message: Message) -> None:
                 members_to_tag.append(f"<a href='tg://user?id={member.user.id}'>{emoji}</a>")
 
         if not members_to_tag:
-            await message.reply_text("कोई भी सदस्य नहीं मिला जिसे टैग किया जा सके।", parse_mode=enums.ParseMode.HTML)
+            await message.reply_text("Koi bhi sadasya nahi mila jise tag kiya ja sake.", parse_mode=enums.ParseMode.HTML)
             return
+        
+        logger.info(f"Found {len(members_to_tag)} members to tag in {chat_id}.")
 
-        chunk_size = 10
+        chunk_size = 5  # Reduced chunk size
         tag_messages_to_delete = []
 
         async def tag_task():
@@ -1739,23 +1835,38 @@ async def tag_all(client: Client, message: Message) -> None:
                     if message_text:
                         final_message += f"\n\n{message_text}"
 
-                    sent_message = await message.reply_text(
-                        final_message,
-                        parse_mode=enums.ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
-                    tag_messages_to_delete.append(sent_message.id)
-                    await asyncio.sleep(4)
+                    try:
+                        sent_message = await message.reply_text(
+                            final_message,
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                        tag_messages_to_delete.append(sent_message.id)
+                        await asyncio.sleep(5)  # Increased delay
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait error in /tagall. Sleeping for {e.value + 2} seconds.")
+                        await asyncio.sleep(e.value + 2) # Wait extra 2 seconds
+                        # Retry sending the same chunk
+                        sent_message = await message.reply_text(
+                            final_message,
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                        tag_messages_to_delete.append(sent_message.id)
+                        await asyncio.sleep(5)
+                    except Exception as e:
+                        logger.error(f"Error sending a tag message chunk: {e}")
+                        continue # Skip to the next chunk
 
-                ONGOING_TAGGING_TASKS.pop(chat_id)
+
                 bot_info = await client.get_me()
                 bot_username = bot_info.username
                 add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
-                final_message_text = "सभी users को सफलतापूर्वक tag कर दिया गया है!"
+                final_message_text = "Sabhi users ko safaltapoorvak tag kar diya gaya hai!"
                 keyboard = [
-                    [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
-                    [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
+                    [InlineKeyboardButton("➕ Mujhe group mein jodein", url=add_to_group_url)],
+                    [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1767,11 +1878,8 @@ async def tag_all(client: Client, message: Message) -> None:
 
             except asyncio.CancelledError:
                 logger.info(f"Tagging task for chat {chat_id} was cancelled.")
-            except FloodWait as e:
-                logger.warning(f"FloodWait error in /tagall. Sleeping for {e.value} seconds.")
-                await asyncio.sleep(e.value)
             except Exception as e:
-                logger.error(f"Error during tagging task: {e}")
+                logger.error(f"Error during tagging task in {chat_id}: {e}")
             finally:
                 if chat_id in ONGOING_TAGGING_TASKS:
                     ONGOING_TAGGING_TASKS.pop(chat_id)
@@ -1784,28 +1892,31 @@ async def tag_all(client: Client, message: Message) -> None:
         TAG_MESSAGES[chat_id] = tag_messages_to_delete
 
     except errors.MessageTooLong:
-        await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
-        if chat_id in ONGOING_TAGGING_TASKS:
-            ONGOING_TAGGING_TASKS.pop(chat_id)
+        await message.reply_text("टैग करते samay error hui: Message bahut lamba hai. Yeh galti nahi hai, balki Telegram ki ek seema hai.")
     except Exception as e:
-        logger.error(f"Error in /tagall command: {e}")
-        await message.reply_text(f"टैग करते समय error हुई: {e}")
-        if chat_id in ONGOING_TAGGING_TASKS:
-            ONGOING_TAGGING_TASKS.pop(chat_id)
+        logger.error(f"Error in /tagall command for {chat_id}: {e}")
+        await message.reply_text(f"टैग करते samay error hui: {e}")
+    finally:
+        if chat_id in ONGOING_TAGGING_TASKS and not ONGOING_TAGGING_TASKS[chat_id].done():
+             pass # Task is running
+        else:
+             ONGOING_TAGGING_TASKS.pop(chat_id, None)
 
 @client.on_message(filters.command("onlinetag") & filters.group)
 async def online_tag(client: Client, message: Message) -> None:
-    is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
-    if not is_sender_admin:
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if not await is_group_admin(chat_id, user_id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
-    chat_id = message.chat.id
     if chat_id in ONGOING_TAGGING_TASKS:
-        await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
+        await message.reply_text("टैगिंग pehle se hi chal rahi hai. Ise rokne ke liye /tagstop ka upyog karein.")
         return
 
     message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+    logger.info(f"Starting onlinetag command in chat {chat_id} by user {user_id}")
 
     try:
         online_members_to_tag = []
@@ -1818,7 +1929,9 @@ async def online_tag(client: Client, message: Message) -> None:
             await message.reply_text("Pichle kuch samay se koi bhi sadasya online nahi hai.", parse_mode=enums.ParseMode.HTML)
             return
 
-        chunk_size = 10
+        logger.info(f"Found {len(online_members_to_tag)} online members to tag in {chat_id}.")
+
+        chunk_size = 5
         tag_messages_to_delete = []
 
         async def online_tag_task():
@@ -1833,24 +1946,37 @@ async def online_tag(client: Client, message: Message) -> None:
                     
                     if message_text:
                         final_message += f"\n\n{message_text}"
+                    
+                    try:
+                        sent_message = await message.reply_text(
+                            final_message,
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                        tag_messages_to_delete.append(sent_message.id)
+                        await asyncio.sleep(5)
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait error in /onlinetag. Sleeping for {e.value + 2} seconds.")
+                        await asyncio.sleep(e.value + 2)
+                        sent_message = await message.reply_text(
+                            final_message,
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                        tag_messages_to_delete.append(sent_message.id)
+                        await asyncio.sleep(5)
+                    except Exception as e:
+                        logger.error(f"Error sending an onlinetag message chunk: {e}")
+                        continue
 
-                    sent_message = await message.reply_text(
-                        final_message,
-                        parse_mode=enums.ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
-                    tag_messages_to_delete.append(sent_message.id)
-                    await asyncio.sleep(4)
-
-                ONGOING_TAGGING_TASKS.pop(chat_id)
                 bot_info = await client.get_me()
                 bot_username = bot_info.username
                 add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
                 
-                final_message_text = "सभी users को सफलतापूर्वक tag कर दिया गया है!"
+                final_message_text = "Sabhi online users ko safaltapoorvak tag kar diya gaya hai!"
                 keyboard = [
-                    [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
-                    [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
+                    [InlineKeyboardButton("➕ Mujhe group mein jodein", url=add_to_group_url)],
+                    [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1862,11 +1988,8 @@ async def online_tag(client: Client, message: Message) -> None:
             
             except asyncio.CancelledError:
                 logger.info(f"Online tagging task for chat {chat_id} was cancelled.")
-            except FloodWait as e:
-                logger.warning(f"FloodWait error in /onlinetag. Sleeping for {e.value} seconds.")
-                await asyncio.sleep(e.value)
             except Exception as e:
-                logger.error(f"Error during online tagging task: {e}")
+                logger.error(f"Error during online tagging task in {chat_id}: {e}")
             finally:
                 if chat_id in ONGOING_TAGGING_TASKS:
                     ONGOING_TAGGING_TASKS.pop(chat_id)
@@ -1879,19 +2002,19 @@ async def online_tag(client: Client, message: Message) -> None:
         TAG_MESSAGES[chat_id] = tag_messages_to_delete
 
     except errors.MessageTooLong:
-        await message.reply_text("टैग करते समय error हुई: मैसेज बहुत लंबा है। यह गलती नहीं है, बल्कि टेलीग्राम की एक सीमा है।")
-        if chat_id in ONGOING_TAGGING_TASKS:
-            ONGOING_TAGGING_TASKS.pop(chat_id)
+        await message.reply_text("टैग karte samay error hui: Message bahut lamba hai. Yeh galti nahi hai, balki Telegram ki ek seema hai.")
     except Exception as e:
-        logger.error(f"Error in /onlinetag command: {e}")
-        await message.reply_text(f"टैग करते समय error हुई: {e}")
-        if chat_id in ONGOING_TAGGING_TASKS:
-            ONGOING_TAGGING_TASKS.pop(chat_id)
+        logger.error(f"Error in /onlinetag command for {chat_id}: {e}")
+        await message.reply_text(f"टैग karte samay error hui: {e}")
+    finally:
+        if chat_id in ONGOING_TAGGING_TASKS and not ONGOING_TAGGING_TASKS[chat_id].done():
+            pass
+        else:
+            ONGOING_TAGGING_TASKS.pop(chat_id, None)
 
 @client.on_message(filters.command("admin") & filters.group)
 async def tag_admins(client: Client, message: Message) -> None:
-    is_sender_admin = await is_group_admin(message.chat.id, message.from_user.id)
-    if not is_sender_admin:
+    if not await is_group_admin(message.chat.id, message.from_user.id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
 
@@ -1923,14 +2046,13 @@ async def tag_admins(client: Client, message: Message) -> None:
         TAG_MESSAGES[chat_id].append(sent_message.id)
 
     except Exception as e:
-        logger.error(f"Error in /admin command: {e}")
+        logger.error(f"Error in /admin command for {chat_id}: {e}")
         await message.reply_text(f"Admins ko tag karte samay error hui: {e}")
 
 @client.on_message(filters.command("tagstop") & filters.group)
 async def tag_stop(client: Client, message: Message) -> None:
     chat_id = message.chat.id
-    is_sender_admin = await is_group_admin(chat_id, message.from_user.id)
-    if not is_sender_admin:
+    if not await is_group_admin(chat_id, message.from_user.id):
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
         
@@ -1940,12 +2062,16 @@ async def tag_stop(client: Client, message: Message) -> None:
         try:
             task = ONGOING_TAGGING_TASKS.pop(chat_id)
             task.cancel()
-            await message.reply_text("टैगिंग प्रक्रिया बंद kar di gayi hai।")
+            await message.reply_text("टैगिंग prakriya band kar di gayi hai.")
             logger.info(f"Admin {message.from_user.id} stopped ongoing tagging in chat {chat_id}.")
         except Exception as e:
             logger.error(f"Error canceling tagging task: {e}")
-            await message.reply_text(f"टैगिंग प्रक्रिया बंद karte samay error hui: {e}")
-        return
+            await message.reply_text(f"टैगिंग prakriya band karte samay error hui: {e}")
+        # Even if task stopping fails, proceed to delete messages
+    
+    # Clean up any invalid message IDs before attempting deletion
+    if chat_id in TAG_MESSAGES:
+        TAG_MESSAGES[chat_id] = [msg_id for msg_id in TAG_MESSAGES[chat_id] if isinstance(msg_id, int)]
 
     if is_reply and message.reply_to_message.id in TAG_MESSAGES.get(chat_id, []):
         try:
@@ -1955,26 +2081,26 @@ async def tag_stop(client: Client, message: Message) -> None:
             logger.info(f"Admin {message.from_user.id} deleted a specific tagging message in chat {chat_id}.")
         except Exception as e:
             logger.error(f"Error deleting specific tagging message: {e}")
-            await message.reply_text(f"टैगिंग मैसेज डिलीट karte samay error hui: {e}")
+            await message.reply_text(f"टैगिंग message delete karte samay error hui: {e}")
         return
     
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
-        await message.reply_text("कोई भी टैगिंग मैसेज नहीं mila jise roka ya delete kiya ja sake।")
+        await message.reply_text("Koi bhi tagging message nahi mila jise roka ya delete kiya ja sake.")
         return
 
     try:
         await client.delete_messages(chat_id, TAG_MESSAGES[chat_id])
-        TAG_MESSAGES.pop(chat_id)
+        TAG_MESSAGES.pop(chat_id, None) # Use .pop with a default value
 
         bot_info = await client.get_me()
         bot_username = bot_info.username
         add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
 
-        final_message_text = "पिछली टैगिंग के सारे मैसेज डिलीट कर दिए गए हैं।"
+        final_message_text = "Pichli tagging ke saare message delete kar diye gaye hain."
 
         keyboard = [
-            [InlineKeyboardButton("➕ मुझे ग्रुप में जोड़ें", url=add_to_group_url)],
-            [InlineKeyboardButton("📢 अपडेट चैनल", url="https://t.me/asbhai_bsr")]
+            [InlineKeyboardButton("➕ Mujhe group mein jodein", url=add_to_group_url)],
+            [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1987,7 +2113,7 @@ async def tag_stop(client: Client, message: Message) -> None:
 
     except Exception as e:
         logger.error(f"Error in /tagstop command: {e}")
-        await message.reply_text(f"टैगिंग रोकते समय एक error हुई: {e}")
+        await message.reply_text(f"टैगिंग rokne samay ek error hui: {e}")
 
 
 @client.on_message(filters.command("checkperms") & filters.group)
@@ -1996,32 +2122,29 @@ async def check_permissions(client: Client, message: Message):
     bot_id = client.me.id
     
     if not await is_group_admin(chat.id, message.from_user.id):
-        await message.reply_text("आप ग्रुप एडमिन नहीं हैं, इसलिए आप यह कमांड का उपयोग नहीं कर सकते।")
+        await message.reply_text("Aap group admin nahi hain, isliye aap yeh command ka upyog nahi kar sakte.")
         return
 
     try:
         bot_member = await client.get_chat_member(chat.id, bot_id)
-        if not bot_member.privileges:
-            await message.reply_text(
-                "Bot is not an admin in this group. Please make the bot an admin to use this feature."
-            )
+        if bot_member.status != enums.ChatMemberStatus.ADMINISTRATOR:
+            await message.reply_text("Bot is not an admin in this group. Please make the bot an admin.")
             return
 
         perms = bot_member.privileges
-
         message_text = (
-            f"<b>{chat.title}</b> में बॉट की अनुमतियाँ (Permissions):\n\n"
-            f"<b>✅ मैसेज हटा सकता है:</b> {'✅ Yes' if perms.can_delete_messages else '❌ No'}\n"
-            f"<b>✅ सदस्यों को प्रतिबंधित कर सकता है:</b> {'✅ Yes' if perms.can_restrict_members else '❌ No'}\n"
-            f"<b>✅ मैसेज पिन कर सकता है:</b> {'✅ Yes' if perms.can_pin_messages else '❌ No'}\n"
-            f"<b>✅ मैसेज भेज सकता है:</b> {'✅ Yes' if perms.can_post_messages else '❌ No'}\n"
+            f"<b>{chat.title} mein bot ki anumatiyan (Permissions):</b>\n\n"
+            f"<b>Can Delete Messages:</b> {'✅ Yes' if perms.can_delete_messages else '❌ No'}\n"
+            f"<b>Can Restrict Members:</b> {'✅ Yes' if perms.can_restrict_members else '❌ No'}\n"
+            f"<b>Can Pin Messages:</b> {'✅ Yes' if perms.can_pin_messages else '❌ No'}\n"
+            f"<b>Can Post Messages:</b> {'✅ Yes' if perms.can_post_messages else '❌ No'}\n"
         )
 
         await message.reply_text(message_text, parse_mode=enums.ParseMode.HTML)
         logger.info(f"Admin {message.from_user.id} requested permissions check in chat {chat.id}.")
     except Exception as e:
-        logger.error(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
-        await message.reply_text(f"अनुमतियाँ जाँचते समय एक error हुई: {e}")
+        logger.error(f"Anumatiyan jaanchte samay ek error hui: {e}")
+        await message.reply_text(f"Anumatiyan jaanchte samay ek error hui: {e}")
 
 
 # --- Flask App for Health Check ---
