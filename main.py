@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
+# Assuming profanity_filter.py is available and correctly configured
 from profanity_filter import ProfanityFilter
 
 # --- Configuration ---
@@ -28,7 +29,7 @@ API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Yahan par tumhara actual log channel ID daalo
-LOG_CHANNEL_ID = -1002352329534
+LOG_CHANNEL_ID = -1002717243409
 
 # Yahan par apne bot admin user IDs daalo
 ADMIN_USER_IDS = [7315805581]
@@ -50,6 +51,7 @@ EMOJIS = ['😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂'
 DEFAULT_WARNING_LIMIT = 3
 DEFAULT_PUNISHMENT = "mute"
 DEFAULT_CONFIG = ("warn", DEFAULT_WARNING_LIMIT, DEFAULT_PUNISHMENT)
+DEFAULT_DELETE_TIME = 0 # 0 means no auto-delete
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -99,6 +101,8 @@ def init_mongodb():
         db.biolink_exceptions.create_index([("chat_id", 1), ("user_id", 1)], unique=True)
         db.settings.create_index("chat_id", unique=True)
         db.warn_settings.create_index("chat_id", unique=True)
+        # New index for notification delete time
+        db.notification_settings.create_index("chat_id", unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
@@ -126,7 +130,7 @@ async def is_group_admin(chat_id: int, user_id: int) -> bool:
 # FIX: Log function updated to handle cases where LOG_CHANNEL_ID is not set.
 async def log_to_channel(text: str, parse_mode: enums.ParseMode = None) -> None:
     """Sends a log message to the predefined LOG_CHANNEL_ID with better error handling."""
-    if not LOG_CHANNEL_ID:
+    if not LOG_CHANNEL_ID or LOG_CHANNEL_ID == -1: # Added -1 check as a safety
         logger.warning("LOG_CHANNEL_ID is not set or invalid, cannot log to channel.")
         return
 
@@ -181,6 +185,15 @@ def update_group_setting(chat_id, setting_key, setting_value):
         {"$set": {setting_key: setting_value}},
         upsert=True
     )
+
+def get_notification_delete_time(chat_id):
+    if db is None: return DEFAULT_DELETE_TIME
+    settings = db.notification_settings.find_one({"chat_id": chat_id})
+    return settings.get("delete_time", DEFAULT_DELETE_TIME) if settings else DEFAULT_DELETE_TIME
+
+def update_notification_delete_time(chat_id, time_in_minutes):
+    if db is None: return
+    db.notification_settings.update_one({"chat_id": chat_id}, {"$set": {"delete_time": time_in_minutes}}, upsert=True)
 
 def is_whitelisted_sync(chat_id, user_id):
     if db is None: return False
@@ -272,16 +285,25 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
                 f"This is an automated action based on group settings."
             )
             keyboard = [[InlineKeyboardButton("🗑️ Close", callback_data="close")]]
-            
+
     if notification_text:
         try:
-            await client.send_message(
+            sent_notification = await client.send_message(
                 chat_id=chat_id,
                 text=notification_text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=enums.ParseMode.HTML
             )
             logger.info(f"Incident notification sent for user {user.id} in chat {chat_id}.")
+
+            delete_time_minutes = get_notification_delete_time(chat_id)
+            if delete_time_minutes > 0:
+                await asyncio.sleep(delete_time_minutes * 60)
+                try:
+                    await client.delete_messages(chat_id=chat_id, message_ids=sent_notification.id)
+                except Exception as e:
+                    logger.error(f"Error deleting timed notification: {e}")
+
         except Exception as e:
             logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
 
@@ -395,11 +417,11 @@ async def help_handler(client: Client, message: Message):
         f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
         f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
         f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-        f"• <code>/addabuse <shabd></code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+        f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
         f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-        "• <code>/tagall <message></code>: Sabhi members ko tag karein.\n"
-        "• <code>/onlinetag <message></code>: Online members ko tag karein.\n"
-        "• <code>/admin <message></code>: Sirf group admins ko tag karein.\n"
+        "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
+        "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
+        "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
         "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n"
         "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
         "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
@@ -933,6 +955,7 @@ async def show_settings_main_menu(client, message):
         [InlineKeyboardButton("✅ On/Off Settings", callback_data="show_onoff_settings")],
         [InlineKeyboardButton("📋 Warn & Punishment Settings", callback_data="show_warn_punishment_settings")],
         [InlineKeyboardButton("📝 Whitelist List", callback_data="freelist_settings")],
+        [InlineKeyboardButton("⏱️ Notification Delete Time", callback_data="show_notification_delete_time_menu")],
         [InlineKeyboardButton("🕹️ Game Settings", callback_data="show_game_settings")],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
     ])
@@ -1001,6 +1024,34 @@ async def show_warn_punishment_settings(client, message):
         await message.message.edit_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
     else:
         await message.reply_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+
+async def show_notification_delete_time_menu(client, message):
+    if isinstance(message, CallbackQuery):
+        chat_id = message.message.chat.id
+    else:
+        chat_id = message.chat.id
+        
+    delete_time = get_notification_delete_time(chat_id)
+    
+    status_text = (
+        f"<b>⏱️ Notification Delete Time:</b>\n\n"
+        f"Choose how long warning/punishment notifications will stay before being automatically deleted.\n\n"
+        f"<b>Current setting:</b> {'Off' if delete_time == 0 else f'{delete_time} min'}"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Off {'✅' if delete_time == 0 else ''}", callback_data="set_notif_time_0")],
+        [InlineKeyboardButton(f"1 min {'✅' if delete_time == 1 else ''}", callback_data="set_notif_time_1"),
+         InlineKeyboardButton(f"5 min {'✅' if delete_time == 5 else ''}", callback_data="set_notif_time_5")],
+        [InlineKeyboardButton(f"10 min {'✅' if delete_time == 10 else ''}", callback_data="set_notif_time_10"),
+         InlineKeyboardButton(f"1 hour {'✅' if delete_time == 60 else ''}", callback_data="set_notif_time_60")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
+    ])
+    
+    if isinstance(message, CallbackQuery):
+        await message.message.edit_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+    else:
+        await message.reply_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
 
 
 async def show_game_settings(client, message):
@@ -1453,7 +1504,7 @@ async def handle_all_messages(client: Client, message: Message) -> None:
 # --- Handler for Edited Messages ---
 @client.on_edited_message(filters.text & filters.group & ~filters.via_bot)
 async def handle_edited_messages(client: Client, edited_message: Message) -> None:
-    if not edited_message or not edited_message.text:
+    if not edited_message or not edited_message.text or not edited_message.edit_date:
         return
 
     user = edited_message.from_user
@@ -1468,6 +1519,7 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
     
     settings = get_group_settings(chat.id)
     if settings.get("delete_edited", True):
+        # The edit_date check confirms it's an actual edit, not a forward or other message type that might trigger this.
         await handle_incident(client, chat.id, user, "Edited message deleted", edited_message, "edited_message_deleted")
 
 
@@ -1479,7 +1531,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_', 'tictac_new_game_starter_')):
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_', 'tictac_new_game_starter_','set_notif_time_')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
@@ -1509,11 +1561,11 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
             f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
             f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-            f"• <code>/addabuse <shabd></code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+            f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
             f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
-            "• <code>/tagall <message></code>: Sabhi members ko tag karein.\n"
-            "• <code>/onlinetag <message></code>: Online members ko tag karein.\n"
-            "• <code>/admin <message></code>: Sirf group admins ko tag karein.\n"
+            "• <code>/tagall &lt;message&gt;</code>: Sabhi members ko tag karein.\n"
+            "• <code>/onlinetag &lt;message&gt;</code>: Online members ko tag karein.\n"
+            "• <code>/admin &lt;message&gt;</code>: Sirf group admins ko tag karein.\n"
             "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n"
             "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
             "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
@@ -1591,6 +1643,19 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         
     if data == "show_game_settings":
         await show_game_settings(client, query)
+        return
+
+    if data == "show_notification_delete_time_menu":
+        await show_notification_delete_time_menu(client, query)
+        return
+    
+    if data.startswith("set_notif_time_"):
+        try:
+            time_in_minutes = int(data.split('_')[-1])
+            update_notification_delete_time(chat_id, time_in_minutes)
+            await show_notification_delete_time_menu(client, query)
+        except ValueError:
+            await query.answer("Invalid time selected.")
         return
         
     if data == "freelist_settings":
