@@ -28,7 +28,7 @@ API_HASH = os.getenv("API_HASH")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Yahan par tumhara actual log channel ID daalo
-LOG_CHANNEL_ID = -1002717243400
+LOG_CHANNEL_ID = -1002717243409
 
 # Yahan par apne bot admin user IDs daalo
 ADMIN_USER_IDS = [7315805581]
@@ -822,8 +822,9 @@ async def tictac_game_play(client: Client, query: CallbackQuery):
         await asyncio.sleep(300)
         if chat_id in TIC_TAC_TOE_GAMES and (datetime.now() - TIC_TAC_TOE_GAMES[chat_id]['last_active']).total_seconds() >= 300:
             await end_tictactoe_game(client, chat_id)
+    
     TIC_TAC_TOE_TASK[chat_id] = asyncio.create_task(inactivity_check())
-
+    
     winner = check_win(board)
     if winner:
         winner_name = game_state['player_names'][user_id]
@@ -1410,6 +1411,89 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             pass
         return
 
+    if data == "help_menu":
+        help_text = (
+            "<b>🛠️ Bot Commands & Usage</b>\n\n"
+            "<b>Private Message Commands:</b>\n"
+            "`/lock <@username> <message>` - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
+            "`/secretchat <@username> <message>` - Ek secret message bhejein, jo group mein sirf ek pop-up mein dikhega. (Group mein hi kaam karega)\n\n"
+            "<b>Tic Tac Toe Game:</b>\n"
+            "`/tictac @user1 @user2` - Do users ke saath Tic Tac Toe game shuru karein. Ek baar mein ek hi game chalega.\n\n"
+            "<b>BioLink Protector Commands:</b>\n"
+            "`/free` – whitelist a user (reply or user/id)\n"
+            "`/unfree` – remove from whitelist\n"
+            "`/freelist` – list all whitelisted users\n\n"
+            "<b>General Moderation Commands:</b>\n"
+            f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
+            f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
+            f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+            f"• <code>/addabuse <shabd></code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+            f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
+            "• <code>/tagall <message></code>: Sabhi members ko tag karein.\n"
+            "• <code>/onlinetag <message></code>: Online members ko tag karein.\n"
+            "• <code>/admin <message></code>: Sirf group admins ko tag karein.\n"
+            "• <code>/tagstop</code>: Saare tagging messages ko delete kar dein.\n\n"
+            "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
+            " 1. ⚠️ Warn them\n"
+            " 2. 🔇 Mute if they exceed limit\n"
+            " 3. 🔨 Ban if set to ban\n\n"
+            "<b>Use the inline buttons on warnings to cancel or whitelist</b>"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+        await query.message.edit_text(help_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        return
+
+    if data == "other_bots":
+        other_bots_text = (
+            "🤖 <b>Mere Dusre Bots:</b>\n\n"
+            "Movies, webseries, anime, etc. dekhne ke liye sabse best bot: \n"
+            "➡️ @asfilter_bot\n\n"
+            "Group par chat ke liye bot chahiye jo aapke group par aadmi ki tarah baatein kare, logon ka manoranjan kare, aur isme kai commands aur tagde features bhi hain. Isme har mahine paise jeetne ka leaderboard bhi hai: \n"
+            "➡️ @askiangelbot"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+        await query.message.edit_text(other_bots_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
+        return
+        
+    if data == "donate_info":
+        donate_text = (
+            "💖 <b>Humein Support Karein!</b>\n\n"
+            "Agar aapko mera kaam pasand aaya hai, toh aap humein support kar sakte hain. Aapka chhota sa daan bhi bahut madad karega!\n\n"
+            "<b>UPI ID:</b> `arsadsaifi8272@ibl`\n\n"
+            "<b>Thank you for your support!</b>"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
+        await query.message.edit_text(donate_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        return
+
+    if data == "back_to_main_menu":
+        bot_info = await client.get_me()
+        bot_name = bot_info.first_name
+        bot_username = bot_info.username
+        add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
+        
+        welcome_message = (
+            f"👋 <b>Namaste {query.from_user.first_name}!</b>\n\n"
+            f"Mai <b>{bot_name}</b> hun, aapka group moderator bot. "
+            f"Mai aapke groups ko saaf suthra rakhne mein madad karta hun."
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Me To Your Group", url=add_to_group_url)],
+            [InlineKeyboardButton("❓ Help", callback_data="help_menu"), InlineKeyboardButton("🤖 Other Bots", callback_data="other_bots")],
+            [InlineKeyboardButton("📢 Update Channel", url="https://t.me/asbhai_bsr"), InlineKeyboardButton("💖 Donate", callback_data="donate_info")],
+            [InlineKeyboardButton("📈 Promotion", url="https://t.me/asprmotion")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.message.edit_text(
+            text=welcome_message,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+        return
+
     if data == "show_settings_main_menu":
         await show_settings_main_menu(client, query)
         return
@@ -1626,7 +1710,7 @@ async def tag_all(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "सभी members ko tag kiya ja raha hai!"
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
     
     try:
         members_to_tag = []
@@ -1721,7 +1805,7 @@ async def online_tag(client: Client, message: Message) -> None:
         await message.reply_text("टैगिंग पहले से ही चल रही है। इसे रोकने के लिए /tagstop का उपयोग करें।")
         return
 
-    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else "Online members ko tag kiya ja raha hai!"
+    message_text = " ".join(message.command[1:]) if len(message.command) > 1 else ""
 
     try:
         online_members_to_tag = []
@@ -1849,6 +1933,8 @@ async def tag_stop(client: Client, message: Message) -> None:
     if not is_sender_admin:
         await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
         return
+        
+    is_reply = message.reply_to_message is not None
 
     if chat_id in ONGOING_TAGGING_TASKS:
         try:
@@ -1861,8 +1947,19 @@ async def tag_stop(client: Client, message: Message) -> None:
             await message.reply_text(f"टैगिंग प्रक्रिया बंद karte samay error hui: {e}")
         return
 
+    if is_reply and message.reply_to_message.id in TAG_MESSAGES.get(chat_id, []):
+        try:
+            await client.delete_messages(chat_id, [message.reply_to_message.id, message.id])
+            TAG_MESSAGES[chat_id].remove(message.reply_to_message.id)
+            await message.reply_text("Woh tagging message delete kar diya gaya hai.")
+            logger.info(f"Admin {message.from_user.id} deleted a specific tagging message in chat {chat_id}.")
+        except Exception as e:
+            logger.error(f"Error deleting specific tagging message: {e}")
+            await message.reply_text(f"टैगिंग मैसेज डिलीट karte samay error hui: {e}")
+        return
+    
     if chat_id not in TAG_MESSAGES or not TAG_MESSAGES[chat_id]:
-        await message.reply_text("कोई भी टैगिंग मैसेज नहीं mila jise roka ja sake।")
+        await message.reply_text("कोई भी टैगिंग मैसेज नहीं mila jise roka ya delete kiya ja sake।")
         return
 
     try:
@@ -1886,7 +1983,7 @@ async def tag_stop(client: Client, message: Message) -> None:
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML
         )
-        logger.info(f"Admin {message.from_user.id} cleaned up old tagging messages in chat {chat_id}.")
+        logger.info(f"Admin {message.from_user.id} cleaned up all tagging messages in chat {chat_id}.")
 
     except Exception as e:
         logger.error(f"Error in /tagstop command: {e}")
@@ -1949,3 +2046,4 @@ if __name__ == "__main__":
     logger.info("Bot is starting...")
     client.run()
     logger.info("Bot stopped")
+
