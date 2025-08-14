@@ -411,11 +411,11 @@ async def help_handler(client: Client, message: Message):
         "`/unfree` – remove from whitelist\n"
         "`/freelist` – list all whitelisted users\n\n"
         "<b>General Moderation Commands:</b>\n"
-        f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
-        f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
-        f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-        f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
-        f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
+        "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
+        "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
+        "• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+        "• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+        "• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
         "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
         "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
         " 1. ⚠️ Warn them\n"
@@ -428,11 +428,6 @@ async def help_handler(client: Client, message: Message):
 
 @client.on_message(filters.group & filters.command("lock"))
 async def lock_message_handler(client: Client, message: Message):
-    # Check if sender is an admin
-    if not await is_group_admin(message.chat.id, message.from_user.id):
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
-        return
-
     # Check for arguments
     if len(message.command) < 3:
         await message.reply_text("Kripya user ko mention karein aur message likhein. Upyog: `/lock <@username> <message>`")
@@ -531,10 +526,6 @@ async def show_lock_callback_handler(client: Client, query: CallbackQuery):
 
 @client.on_message(filters.group & filters.command("secretchat"))
 async def secret_chat_command(client: Client, message: Message):
-    if not await is_group_admin(message.chat.id, message.from_user.id):
-        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
-        return
-
     if len(message.command) < 3:
         await message.reply_text("Kripya user ko mention karein aur message likhein. Upyog: `/secretchat <@username> <message>`")
         return
@@ -1245,10 +1236,10 @@ async def add_abuse_word(client: Client, message: Message) -> None:
     if profanity_filter is not None:
         try:
             if await profanity_filter.add_bad_word(word_to_add):
-                await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai\\.", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
             else:
-                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se ही list mein maujood hai\\.", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se hi list mein maujood hai.", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             await message.reply_text(f"Shabd jodte samay error hui: {e}")
             logger.error(f"Error adding abuse word {word_to_add}: {e}")
@@ -1511,6 +1502,72 @@ async def handle_edited_messages(client: Client, edited_message: Message) -> Non
         # The edit_date check confirms it's an actual edit, not a forward or other message type that might trigger this.
         await handle_incident(client, chat.id, user, "Edited message deleted", edited_message, "edited_message_deleted")
 
+# --- Global Callback functions ---
+async def command_freelist_callback(client, query):
+    chat_id = query.message.chat.id
+    ids = get_whitelist_sync(chat_id)
+    if not ids:
+        text = "<b>⚠️ No users are whitelisted in this group.</b>"
+    else:
+        text = "<b>📋 Whitelisted Users:</b>\n\n"
+        for i, uid in enumerate(ids, start=1):
+            try:
+                user = await client.get_users(uid)
+                name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
+                text += f"{i}: <a href='tg://user?id={uid}'>{name}</a> [`{uid}`]\n"
+            except:
+                text += f"{i}: [User not found] [`{uid}`]\n"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="show_settings_main_menu")],
+        [InlineKeyboardButton("🗑️ Close", callback_data="close")]
+    ])
+    await query.message.edit_text(text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
+
+async def broadcast_to_all(client: Client, message: Message):
+    if db is None:
+        return
+    
+    success_count = 0
+    fail_count = 0
+    
+    # Send to all users
+    try:
+        users = db.users.find({}, {"user_id": 1})
+        for user_doc in users:
+            try:
+                await message.copy(user_doc["user_id"])
+                success_count += 1
+                await asyncio.sleep(0.1) # Be gentle
+            except Exception as e:
+                logger.error(f"Failed to send broadcast to user {user_doc['user_id']}: {e}")
+                fail_count += 1
+    except Exception as e:
+        logger.error(f"Error fetching users for broadcast: {e}")
+
+    # Send to all groups
+    try:
+        groups = db.groups.find({}, {"chat_id": 1})
+        for group_doc in groups:
+            try:
+                await message.copy(group_doc["chat_id"])
+                success_count += 1
+                await asyncio.sleep(0.1) # Be gentle
+            except Exception as e:
+                logger.error(f"Failed to send broadcast to group {group_doc['chat_id']}: {e}")
+                fail_count += 1
+    except Exception as e:
+        logger.error(f"Error fetching groups for broadcast: {e}")
+
+    broadcast_report = (
+        f"<b>📢 Broadcast Complete!</b>\n\n"
+        f"✅ Sent to: {success_count} chats.\n"
+        f"❌ Failed to send to: {fail_count} chats."
+    )
+    await client.send_message(message.from_user.id, broadcast_report, parse_mode=enums.ParseMode.HTML)
+    logger.info(f"Broadcast finished. Success: {success_count}, Fail: {fail_count}")
+    BROADCAST_MESSAGE.pop(message.from_user.id, None)
+
 
 # --- Callback Query Handlers ---
 @client.on_callback_query()
@@ -1534,24 +1591,38 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             pass
         return
 
+    if data == "confirm_broadcast" and user_id in BROADCAST_MESSAGE:
+        broadcast_message = BROADCAST_MESSAGE[user_id]
+        if broadcast_message != "waiting_for_message":
+            await query.message.edit_text("📢 Broadcast shuru ho raha hai...", reply_markup=None)
+            await broadcast_to_all(client, broadcast_message)
+        else:
+            await query.answer("Invalid broadcast state. Please try /broadcast again.", show_alert=True)
+        return
+
+    if data == "cancel_broadcast" and user_id in BROADCAST_MESSAGE:
+        BROADCAST_MESSAGE.pop(user_id, None)
+        await query.message.edit_text("❌ Broadcast cancel kar diya gaya hai.")
+        return
+
     if data == "help_menu":
         help_text = (
             "<b>🛠️ Bot Commands & Usage</b>\n\n"
             "<b>Private Message Commands:</b>\n"
-            "`/lock <@username> <message>` - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
-            "`/secretchat <@username> <message>` - Ek secret message bhejein, jo group mein sirf ek pop-up mein dikhega. (Group mein hi kaam karega)\n\n"
+            "• <code>/lock &lt;@username&gt; &lt;message&gt;</code> - Message ko lock karein taaki sirf mention kiya gaya user hi dekh sake. (Group mein hi kaam karega)\n"
+            "• <code>/secretchat &lt;@username&gt; &lt;message&gt;</code> - Ek secret message bhejein, jo group mein sirf ek pop-up mein dikhega. (Group mein hi kaam karega)\n\n"
             "<b>Tic Tac Toe Game:</b>\n"
-            "`/tictac @user1 @user2` - Do users ke saath Tic Tac Toe game shuru karein. Ek baar mein ek hi game chalega.\n\n"
+            "• <code>/tictac @user1 @user2</code> - Do users ke saath Tic Tac Toe game shuru karein. Ek baar mein ek hi game chalega.\n\n"
             "<b>BioLink Protector Commands:</b>\n"
-            "`/free` – whitelist a user (reply or user/id)\n"
-            "`/unfree` – remove from whitelist\n"
-            "`/freelist` – list all whitelisted users\n\n"
+            "• <code>/free</code> – whitelist a user (reply or user/id)\n"
+            "• <code>/unfree</code> – remove from whitelist\n"
+            "• <code>/freelist</code> – list all whitelisted users\n\n"
             "<b>General Moderation Commands:</b>\n"
-            f"• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
-            f"• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
-            f"• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
-            f"• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
-            f"• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
+            "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
+            "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
+            "• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+            "• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
+            "• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
             "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
             "<b>When someone with a URL in their bio or a link in their message posts, I’ll:</b>\n"
             " 1. ⚠️ Warn them\n"
@@ -1579,7 +1650,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         donate_text = (
             "💖 <b>Humein Support Karein!</b>\n\n"
             "Agar aapko mera kaam pasand aaya hai, toh aap humein support kar sakte hain. Aapka chhota sa daan bhi bahut madad karega!\n\n"
-            "<b>UPI ID:</b> `arsadsaifi8272@ibl`\n\n"
+            "<b>UPI ID:</b> <code>arsadsaifi8272@ibl</code>\n\n"
             "<b>Thank you for your support!</b>"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back_to_main_menu")], [InlineKeyboardButton("🗑️ Close", callback_data="close")]])
@@ -1807,27 +1878,6 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         except MessageNotModified:
             pass
         return
-
-    async def command_freelist_callback(client, query):
-        chat_id = query.message.chat.id
-        ids = get_whitelist_sync(chat_id)
-        if not ids:
-            text = "<b>⚠️ No users are whitelisted in this group.</b>"
-        else:
-            text = "<b>📋 Whitelisted Users:</b>\n\n"
-            for i, uid in enumerate(ids, start=1):
-                try:
-                    user = await client.get_users(uid)
-                    name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
-                    text += f"{i}: <a href='tg://user?id={uid}'>{name}</a> [`{uid}`]\n"
-                except:
-                    text += f"{i}: [User not found] [`{uid}`]\n"
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="show_settings_main_menu")],
-            [InlineKeyboardButton("🗑️ Close", callback_data="close")]
-        ])
-        await query.message.edit_text(text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
 
 @client.on_message(filters.command("checkperms") & filters.group)
 async def check_permissions(client: Client, message: Message):
