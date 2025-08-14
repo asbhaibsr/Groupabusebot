@@ -1,4 +1,3 @@
-```markdown
 <!-- -------------- README.md -------------- -->
 <!-- Paste this entire block into your repo root as README.md -->
 
