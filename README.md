@@ -1,7 +1,7 @@
 <!-- README.md – FULL & COPY-PASTE READY -->
 <!-- Click the button once → entire file copied -->
 
-<button onclick="navigator.clipboard.writeText(`# AS-FILTER-BOT – Ultimate Telegram Moderation Bot
+<button onclick="navigator.clipboard.writeText(` AS-FILTER-BOT – Ultimate Telegram Moderation Bot
 
 <p align=\"center\">
   <img src=\"https://telegra.ph/file/8ddd3c6c3b7a02a0f1f6c.jpg\" width=\"120\" style=\"border-radius:50%;\"/>
