@@ -20,8 +20,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Custom module import (ensure this file exists and is correctly configured)
-# Assuming profanity_filter.py is available and correctly configured
 from profanity_filter import ProfanityFilter
+
+# --- New import for the reminder feature ---
+from reminder_scheduler import reminder_scheduler
 
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
@@ -1878,5 +1880,9 @@ if __name__ == "__main__":
     flask_thread.start()
 
     logger.info("Bot is starting...")
+    
+    # --- New line added to start the reminder scheduler ---
+    client.loop.create_task(reminder_scheduler(client, db))
+
     client.run()
     logger.info("Bot stopped")
