@@ -1,8 +1,3 @@
-Understood — you want everything in one single block, perfectly copy-pasted in one go. Here’s a *single-block* `README.md`. Just select from the very first `<!-- README.md -->` to the last `</style>` and paste it directly into your repo root:
-
-````markdown
-<!-- -------------- README.md -------------- -->
-<!-- Paste this entire block into your repo root as README.md -->
 
 <h1 align="center">
   <img src="https://telegra.ph/file/8ddd3c6c3b7a02a0f1f6c.jpg" width="120" style="border-radius:50%;"/><br/>
@@ -136,11 +131,3 @@ button:hover{background:#1565c0}
 ```
 
 ---
-
-### ​ Reminder:
-- GitHub **will strip** `<script>` and `<style>` from `.md`, so the animation and copy buttons **won’t run** there.
-- But this **is the one single block** you can paste—nothing split into separate sections.
-
-For full functionality, consider hosting as `index.html` via GitHub Pages. Let me know if you'd like help setting that up!
-::contentReference[oaicite:0]{index=0}
-```
