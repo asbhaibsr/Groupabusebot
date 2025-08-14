@@ -13,6 +13,7 @@
 </p>
 
 <h3 align="center"><span id="typewriter"></span></h3>
+
 <script>
   const phrases=["Smart Group Moderation Bot ✨","Auto Delete Bio-Link / Abuse / Links 🔗","Zero Katte Tic Tac Toe Game 🎮","Tag All / Online / Admins 🎯","Whitelist & Warn System ⚠️","24×7 Flask Health Check 🩺"];
   let i=0,j=0,dir=1;
