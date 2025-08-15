@@ -183,7 +183,7 @@ PORT=8000</code></pre>
 
     <section class="card">
       <h2>🪪 License</h2>
-      <p>MIT © <a href="https://github.com/asbhaibsr" target="_blank" rel="noopener">AS Bhai</a> — fork, modify &amp; deploy freely.</p>
+      <p>MIT © <a href="https://github.com/asbhai" target="_blank" rel="noopener">AS Bhai</a> — fork, modify &amp; deploy freely.</p>
     </section>
 
     <p class="footer">Made with ❤️ for Telegram communities.</p>
