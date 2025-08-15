@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AS Filter Bot — README</title>
+<title>Group Guardian Bot — README</title>
 <style>
   :root{
     --bg:#0b0f14;--card:#0f1620;--soft:#121a26;--text:#e6edf3;--muted:#9fb3c8;
@@ -52,9 +52,9 @@
 
     <header class="hero card" style="padding:20px">
       <div class="brand">
-        <div class="logo">AS</div>
+        <div class="logo">GG</div>
         <div>
-          <h1>AS Filter Bot</h1>
+          <h1>Group Guardian Bot</h1>
           <div class="muted">Telegram group moderation bot — abuse/link filter, warn→mute→ban, tagging, games & more.</div>
         </div>
       </div>
@@ -93,12 +93,12 @@
       <div class="card">
         <h2>🚀 1-Click Deploy</h2>
         <div class="btnrow" style="margin:8px 0 14px">
-          <a class="btn" href="https://app.koyeb.com/deploy?type=docker&image=docker.io/library/python:3.11&env[PORT]=8000&env[MONGO_DB_URI]=&env[API_ID]=&env[API_HASH]=&env[TELEGRAM_BOT_TOKEN]=&name=as-filter-bot&run_command=python%20main.py" target="_blank" rel="noopener">
+          <a class="btn" href="https://app.koyeb.com/deploy?type=docker&image=docker.io/library/python:3.11&env[PORT]=8000&env[MONGO_DB_URI]=&env[API_ID]=&env[API_HASH]=&env[TELEGRAM_BOT_TOKEN]=&name=group-guardian-bot&run_command=python%20main.py" target="_blank" rel="noopener">
             <!-- Koyeb icon -->
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.9 2.1 22 11.2l-4.2 4.2-9.1-9.1zM2 12.1l4.2-4.2 9.1 9.1-4.2 4.2z"/></svg>
             Deploy to Koyeb
           </a>
-          <a class="btn" href="https://railway.app/new/template?template=https%3A%2F%2Fgithub.com%2Fyourname%2Fas-filter-bot&envs=MONGO_DB_URI,API_ID,API_HASH,TELEGRAM_BOT_TOKEN&optionalEnvs=LOG_CHANNEL_ID" target="_blank" rel="noopener">
+          <a class="btn" href="https://railway.app/new/template?template=https%3A%2F%2Fgithub.com%2Fyourname%2Fgroup-guardian-bot&envs=MONGO_DB_URI,API_ID,API_HASH,TELEGRAM_BOT_TOKEN&optionalEnvs=LOG_CHANNEL_ID" target="_blank" rel="noopener">
             <!-- Railway icon -->
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 4h18v3H3zm0 6h18v3H3zm0 6h18v3H3z"/></svg>
             Deploy on Railway
@@ -112,8 +112,8 @@
         <ol>
           <li>Clone &amp; Install:</li>
         </ol>
-        <pre><code>git clone https://github.com/yourname/as-filter-bot.git
-cd as-filter-bot
+        <pre><code>git clone https://github.com/yourname/group-guardian-bot.git
+cd group-guardian-bot
 pip install -r requirements.txt</code></pre>
         <ol start="2">
           <li>Create <code>.env</code>:</li>
@@ -183,7 +183,7 @@ PORT=8000</code></pre>
 
     <section class="card">
       <h2>🪪 License</h2>
-      <p>MIT © <a href="https://github.com/asbhai" target="_blank" rel="noopener">AS Bhai</a> — fork, modify &amp; deploy freely.</p>
+      <p>MIT © <a href="https://github.com/asbhaibsr" target="_blank" rel="noopener">AS Bhai</a> — fork, modify &amp; deploy freely.</p>
     </section>
 
     <p class="footer">Made with ❤️ for Telegram communities.</p>
