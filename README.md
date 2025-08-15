@@ -35,3 +35,10 @@ Telegram group moderation bot — abuse/link filter, warn→mute→ban, tagging,
 git clone https://github.com/yourname/group-guardian-bot.git
 cd group-guardian-bot
 pip install -r requirements.txt
+
+API_ID=123456
+API_HASH=abcdef123456
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF
+MONGO_DB_URI=mongodb+srv://user:pass@cluster0.mongodb.net/?retryWrites=true&w=majority
+LOG_CHANNEL_ID=-1002717243409
+PORT=8000
