@@ -36,7 +36,7 @@ git clone https://github.com/yourname/group-guardian-bot.git
 cd group-guardian-bot
 pip install -r requirements.txt
 
-### .env
+#### .env
 API_ID=123456
 API_HASH=abcdef123456
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF
@@ -46,7 +46,7 @@ PORT=8000
 
 python main.py
 
-### 💬 Commands (Owner/Admin)
+##### 💬 Commands (Owner/Admin)
 /start
 /help
 /settings
@@ -68,7 +68,7 @@ python main.py
 Note: Some commands require admin rights.
 
 
-🛠 Technology Stack
+####### 🛠 Technology Stack
     Python 3.11+ with Pyrogram
     MongoDB for persistence
     Flask health-check endpoint
@@ -76,13 +76,13 @@ Note: Some commands require admin rights.
 Anti-Abuse Anti-Link Warn/Mute/Ban TagAll Games
 
 
-📞 Support
+######## 📞 Support
     Update Channel: @asbhai_bsr
     Support Group: @askiangelbot
     Donation (UPI): arsadsaifi8272@ibl
     Developer: @asprmotion
 
 
-🪪 License
+######## 🪪 License
 MIT © AS Bhai — fork, modify & deploy freely.
 
