@@ -23,7 +23,7 @@ load_dotenv()
 from profanity_filter import ProfanityFilter
 
 # --- New import for the reminder feature ---
-from reminder_scheduler_updated import reminder_scheduler
+from reminder_scheduler import reminder_scheduler
 
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
