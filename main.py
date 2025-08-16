@@ -22,6 +22,9 @@ load_dotenv()
 # --- Custom module import (ensure this file exists and is correctly configured)
 from profanity_filter import ProfanityFilter
 
+# --- New import for the reminder feature ---
+from reminder_scheduler_updated import reminder_scheduler
+
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -46,6 +49,10 @@ DEFAULT_WARNING_LIMIT = 3
 DEFAULT_PUNISHMENT = "mute"
 DEFAULT_CONFIG = ("warn", DEFAULT_WARNING_LIMIT, DEFAULT_PUNISHMENT)
 DEFAULT_DELETE_TIME = 0 # 0 means no auto-delete
+
+# --- Reminder Constants ---
+DEFAULT_REMINDER_ENABLED = True
+DEFAULT_REMINDER_INTERVAL_HOURS = 2
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -73,51 +80,6 @@ LOCKED_MESSAGES = {}
 SECRET_CHATS = {}
 TIC_TAC_TOE_GAMES = {}
 TIC_TAC_TOE_TASK = {}
-SCHEDULED_MESSAGES_TASK = {}
-
-# --- Scheduled Messages ---
-SCHEDULED_MESSAGES_DATA = {
-    "romantic": [
-        "𝔄𝔭𝔨𝔢 𝔟𝔦𝔫𝔞 𝔶𝔢𝔥 𝔤𝔯𝔬𝔲𝔭 𝔨𝔦𝔱𝔫𝔞 𝔰𝔬𝔬𝔫𝔞 𝔩𝔞𝔤𝔱𝔞 𝔥𝔞. 𝔎𝔬𝔦 𝔱𝔬 𝔨 𝔯𝔬𝔪𝔞𝔫𝔱𝔦𝔠 𝔪𝔢𝔰𝔰𝔞𝔤𝔢 𝔨𝔞𝔯𝔬! ❤️",
-        "𝙆𝙞𝙨𝙞 𝙠𝙤 𝙥𝙧𝙤𝙥𝙤𝙨𝙚 𝙠𝙖𝙧𝙣𝙚 𝙠𝙖 𝙢𝙤𝙤𝙙 𝙝𝙖𝙞? 𝙔𝙚𝙝 𝙜𝙧𝙤𝙪𝙥 𝙖𝙖𝙥𝙠𝙞 𝙝𝙚𝙡𝙥 𝙠𝙖𝙧 𝙨𝙖𝙠𝙩𝙖 𝙝𝙖𝙞! 💍",
-        "ʏᴏᴜ'ʀᴇ ʟɪᴋᴇ ᴍʏ ᴘʜᴏɴᴇ ʙᴀᴛᴛᴇʀʏ - ʏᴏᴜ ᴄʜᴀʀɢᴇ ᴍʏ ʟɪꜰᴇ! 🔋❤️",
-        "𝒯𝓊𝓂 𝒽𝒶𝓇 𝓌𝒶𝓀𝓉 𝓂𝑒𝓇𝑒 𝒹𝒽𝒶𝒹𝓀𝒶𝓃𝑜 𝓂𝑒 𝒽𝑜. 𝒮𝒶𝓂𝒿𝒽𝑒? 💓",
-        "𝐘𝐨𝐮 + 𝐌𝐞 = 𝐅𝐨𝐫𝐞𝐯𝐞𝐫 ❤️ 𝐀𝐠𝐫𝐞𝐞? 😘",
-        "𝓘 𝔀𝓪𝓷𝓽 𝓽𝓸 𝓫𝓮 𝔂𝓸𝓾𝓻 𝓯𝓪𝓿𝓸𝓻𝓲𝓽𝓮 𝓱𝓪𝓫𝓲... 𝓐𝓷𝓭 𝓽𝓱𝓷 𝓘 𝔀𝓪𝓷𝓽 𝓽𝓸 𝓻𝓾𝓲𝓷 𝓲𝓽. 😈",
-        "𝖂𝖍𝖞 𝖉𝖔 𝖈𝖔𝖒𝖕𝖚𝖙𝖊𝖗𝖘 𝖘𝖚𝖈𝖐 𝖆𝖙 𝖋𝖑𝖎𝖗𝖙𝖎𝖓𝖌? 𝕭𝖊𝖈𝖆𝖚𝖘𝖊 𝖙𝖍𝖊𝖞 𝖍𝖆𝖛𝖊 𝖓𝖔 𝖍𝖆𝖗𝖉 𝖉𝖗𝖎𝖛𝖊! 😉",
-        "Ａｒｅ　ｙｏｕ　ａ　ｍａｇｎｅｔ？ 🧲 Ｂｅｃａｕｓｅ　Ｉ'ｍ　ａｔｔｒａｃｔｅｄ　ｔｏ　ｙｏｕ！ 💫"
-    ],
-    "motivational": [
-        "𝕋𝕠𝕕𝕒𝕪 𝕚𝕤 𝕒 𝕘𝕣𝕖𝕒𝕥 𝕕𝕒𝕪 𝕥𝕠 𝕓𝕠 𝕤𝕠𝕞𝕖𝕥𝕙𝕚𝕟𝕘 𝕒𝕞𝕒𝕫𝕚𝕟𝕘! ✨",
-        "𝘿𝙤𝙣'𝙩 𝙨𝙩𝙤𝙥 𝙬𝙝𝙚𝙣 𝙮𝙤𝙪'𝙧𝙚 𝙩𝙞𝙧𝙚𝙙. 𝙎𝙩𝙤𝙥 𝙬𝙝𝙚𝙣 𝙮𝙤𝙪'𝙧𝙚 𝙙𝙤𝙣𝙚. 💪",
-        "ʏᴏᴜʀ ᴏɴʟʏ ʟɪᴍɪᴛ ɪs ʏᴏᴜʀꜱᴇʟꜰ - ʙʀᴇᴀᴋ ꜰʀᴇᴇ! 🦅",
-        "𝒯𝒽𝑒 𝒷𝑒𝓈𝓉 𝓌𝒶𝓎 𝓉𝑜 𝓅𝓇𝑒𝒹𝒾𝒸𝓉 𝓉𝒽𝑒 𝒻𝓊𝓊𝓇𝑒 𝒾𝓈 𝓉𝑜 𝒸𝓇𝑒𝒶𝓉𝑒 𝒾𝓉. 🚀",
-        "𝐒𝐮𝐜𝐜𝐞𝐬𝐬 𝐢𝐬 𝐧𝐨𝐭 𝐟𝐢𝐧𝐚𝐥, 𝐟𝐚𝐢𝐥𝐮𝐫𝐞 𝐢𝐬 𝐧𝐨𝐭 𝐟𝐚𝐭𝐚𝐥: 𝐈𝐭 𝐢𝐬 𝐭𝐡𝐞 𝐜𝐨𝐮𝐫𝐚𝐠𝐞 𝐭𝐨 𝐜𝐨𝐧𝐭𝐢𝐧𝐮𝐞 𝐭𝐡𝐚𝐭 𝐜𝐨𝐮𝐧𝐭𝐬. 🏆",
-        "𝓣𝓱𝓮 𝓸𝓷𝔂 𝓹𝓮𝓻𝓼𝓷 𝔂𝓸𝓾 𝓼𝓱𝓸𝓾𝓵𝓭 𝓽𝔂 𝓽 𝓫𝓮 𝓫𝓮𝓽𝓮 𝓽𝓱𝓪𝓷 𝓲𝓼 𝓽𝓱𝓮 𝓹𝓮𝓼𝓷 𝔂𝓸𝓾 𝔀𝓮𝓻𝓮 𝔂𝓮𝓼𝓽𝓮𝓻𝓭𝓪𝔂. 🌟",
-        "𝖄𝖔𝖚 𝖆𝖗𝖊 𝖈𝖆𝖕𝖆𝖇𝖑𝖊 𝖔𝖋 𝖆𝖒𝖆𝖟𝖎𝖓𝖌 𝖙𝖍𝖎𝖓𝖌𝖘! 𝕭𝖊𝖑𝖎𝖊𝖛𝖊 𝖎𝖓 𝖞𝖔𝖚𝖗𝖘𝖊𝖑𝖋. 💫",
-        "Ｄｏｎ'ｔ　ｗａｉｔ　ｆｆｆｆｆｆ　ｔｈｅ　ｐｅｒｆｅｃｔ　ｍｏｍｅｎｔ．　Ｔａｋｅ　ｔｈｅ　ｍｏｍｅｎｔ　ａｎｄ　ｍａｋｅ　ｉｔ　ｐｅｒｆｅｃｔ． 🌈"
-    ],
-    "general": [
-        "𝔄𝔧 𝔨𝔞 𝔡𝔦𝔫 𝔨𝔞𝔦𝔰𝔞 𝔯𝔞𝔥𝔞 𝔰𝔞𝔟𝔨𝔞? 𝔎𝔬𝔦 𝔦𝔫𝔱𝔯𝔢𝔰𝔱𝔦𝔫𝔤 𝔰𝔱𝔬𝔯𝔶 𝔥𝔞𝔦? 📖",
-        "𝘼𝙥𝙣𝙚 𝙛𝙖𝙫𝙤𝙧𝙞𝙩𝙚 𝙤𝙚𝙢/𝙨𝙝𝙖𝙮𝙖𝙧𝙞 𝙖𝙧𝙝𝙤 𝙖𝙨𝙖𝙣𝙙 𝙠𝙖𝙧𝙣𝙚 𝙬𝙖𝙡𝙤𝙣 𝙠𝙚 𝙡𝙞𝙮𝙚. ✍️",
-        "ᴡʜᴀᴛ'ꜱ ʏᴏᴜʀ ꜰᴀᴠᴏʀɪᴛᴇ ᴍᴏᴍᴇɴᴛ ꜰʀᴏᴍ ᴛʜɪꜱ ᴡᴇᴇᴋ? 🗓️",
-        "𝒯𝑒𝓁𝓁 𝓊𝓈 𝓈𝑜𝓂𝑒𝓉𝒽𝒾𝓃𝑔 𝒶𝒷𝑜𝓊𝓉 𝓎𝑜𝓊𝓇𝓈𝑒𝓁𝒻 𝓌𝑒 𝒹𝑜𝓃't 𝓀𝓃𝓌! 🤫",
-        "𝐖𝐡𝐚𝐭'𝐬 𝐭𝐡𝐞 𝐦𝐨𝐬𝐭 𝐚𝐝𝐯𝐞𝐧𝐭𝐮𝐫𝐨𝐮𝐬 𝐭𝐡𝐢𝐧𝐠 𝐲𝐨𝐮'𝐯𝐞 𝐞𝐯𝐞𝐫 𝐝𝐨𝐧𝐞? 🚀",
-        "𝓗𝓸𝔀 𝔀𝓼 𝔂𝓸𝓾𝓻 𝓭𝓪𝔂? 𝓢𝓱𝓪𝓻𝓮 𝔂𝓸𝓾𝓻 𝓱𝓲𝓰𝓱𝓼 𝓪𝓷𝓭 𝓵𝓸𝔀𝐬! ☀️🌧️",
-        "𝕯𝖔 𝖞𝖔𝖚 𝖍𝖆𝖛𝖊 𝖆 𝖉𝖆𝖎𝖑𝖞 𝖗𝖔𝖚𝖙𝖎𝖓𝖊? 𝕾𝖍𝖆𝖗𝖊 𝖎𝖙 𝖜𝖎𝖙𝖍 𝖘! ⏰",
-        "Ｗｈｙｔ　ｄｏ　ｙｏｕ　ｄｏ　ｗｈｅｎ　ｙｏｕ　ｆｅｅｌ　ｂｏｒｅｄ？　Ｔｅｌｌ　ｕｓ　ｙｏｕｒ　ｗａｙｓ！ 🎨"
-    ],
-    "group": [
-        "𝔊𝔯𝔬𝔲𝔭 𝔪𝔢𝔪𝔟𝔢𝔯𝔰, 𝔞𝔞𝔧 𝔨𝔦 𝔪𝔢𝔢𝔱𝔦𝔫𝔤 𝔰𝔥𝔲𝔯𝔲 𝔨𝔞𝔯𝔱𝔢 𝔥𝔞𝔦𝔫! 🎤",
-        "𝙃𝙚𝙮 𝙚𝙤𝙥𝙡𝙚! 𝙇𝙚𝙩'𝙨 𝙢𝙖𝙠𝙚 𝙩𝙝𝙞𝙨 𝙜𝙧𝙤𝙪𝙥 mre 𝙖𝙘𝙩𝙞𝙫𝙚. 𝙒𝙝𝙤'𝙨 𝙞𝙣? 💬",
-        "ɢʀᴏᴜᴘ ɢᴏᴀʟ: 100+ ᴍᴇꜱꜱᴀɢᴇꜱ ᴛᴏᴅᴀʏ! ᴄᴀɴ ᴡᴇ ᴅᴏ ɪᴛ? 💯",
-        "𝒢𝓇𝑜𝓊𝓅 𝓇𝓊𝓁𝑒𝓈 𝓇𝑒𝓂𝒾𝓃𝒹𝑒𝓇: 𝐵𝑒 𝓀𝒾𝓃𝒹, 𝒷𝑒 𝒶𝒸𝓉𝒾𝓋𝑒, 𝒶𝓃𝒹 𝒽𝒶𝓋𝓋𝑒 𝒻𝓊𝓃! 🤝",
-        "𝐋𝐞𝐭'𝐬 𝐰𝐞𝐥𝐜𝐨𝐦𝐞 𝐨𝐮𝐫 𝐧𝐞𝐰 𝐦𝐞𝐦𝐛𝐞𝐫𝐬! 𝐒𝐚𝐲 𝐡𝐢! 👋",
-        "𝓦𝓱𝓪𝓽'𝓼 𝔂𝓸 𝓯𝓯𝓯𝓯𝓯 𝓽 𝓭𝓲𝓼𝓬𝓾𝓼𝓼 𝓽𝓸𝓭𝓪𝓽? 𝓛𝓮𝓽's 𝓫𝓻𝓪𝓲𝓷𝓼𝓽𝓸𝓻𝓶! 💡",
-        "𝕿𝖍𝖎𝖘 𝖌𝖗𝖔𝖚𝖕 𝖎𝖘 𝖆𝖇𝖔𝖚𝖙 𝖙𝖔 𝖍𝖎𝖙 500+ 𝖒𝖊𝖒𝖇𝖊𝖗𝖘! 𝖀𝖘𝖊 `/secretchat /lock` 𝖙𝖔 𝖇𝖗𝖎𝖓𝖌 𝖋𝖗𝖎𝖊𝖓𝖉𝖘. 🚀",
-        "Ｌｅｔ'ｓ　ｐｌａｙ　ａ　ｇａｍｅ！　Ｔｙｐｅ　`/tictac`　ｔｏ　ｓｅｅ　ｏｕｒ　ｇｒｏｕｐ　ｇａｍｅｓ． 🎲"
-    ]
-}
 
 
 # --- MongoDB Initialization ---
@@ -142,8 +104,8 @@ def init_mongodb():
         db.warn_settings.create_index("chat_id", unique=True)
         # New index for notification delete time
         db.notification_settings.create_index("chat_id", unique=True)
-        # New index for scheduled messages
-        db.scheduled_messages.create_index([("chat_id", 1), ("category", 1)], unique=True)
+        # New index for reminder settings
+        db.reminder_settings.create_index("chat_id", unique=True)
 
         profanity_filter = ProfanityFilter(mongo_uri=MONGO_DB_URI)
         logger.info("MongoDB connection and collections initialized successfully. Profanity filter is ready.")
@@ -276,6 +238,32 @@ def reset_warnings_sync(chat_id, user_id, category):
         {"$set": {f"counts.{category}": 0}}
     )
 
+# --- New Functions for Reminder Settings ---
+def get_reminder_settings(chat_id):
+    if db is None:
+        return {
+            "enabled": DEFAULT_REMINDER_ENABLED,
+            "interval_hours": DEFAULT_REMINDER_INTERVAL_HOURS
+        }
+    settings = db.reminder_settings.find_one({"chat_id": chat_id})
+    if not settings:
+        default_settings = {
+            "chat_id": chat_id,
+            "enabled": DEFAULT_REMINDER_ENABLED,
+            "interval_hours": DEFAULT_REMINDER_INTERVAL_HOURS
+        }
+        db.reminder_settings.insert_one(default_settings)
+        return default_settings
+    return settings
+
+def update_reminder_setting(chat_id, key, value):
+    if db is None: return
+    db.reminder_settings.update_one(
+        {"chat_id": chat_id},
+        {"$set": {key: value}},
+        upsert=True
+    )
+
 async def handle_incident(client: Client, chat_id, user, reason, original_message: Message, case_type, category=None):
     original_message_id = original_message.id
     full_name = f"{user.first_name}{(' ' + user.last_name) if user.last_name else ''}"
@@ -347,44 +335,6 @@ async def handle_incident(client: Client, chat_id, user, reason, original_messag
 
         except Exception as e:
             logger.error(f"Error sending notification in chat {chat_id}: {e}. Make sure bot has 'Post Messages' permission.")
-
-
-# --- Scheduled Message Logic ---
-async def send_scheduled_message(client, chat_id, message_text, message_category):
-    try:
-        await client.send_message(chat_id, message_text, parse_mode=enums.ParseMode.HTML)
-        logger.info(f"Scheduled message ({message_category}) sent to chat {chat_id}.")
-        
-        # After sending, delete the scheduled entry from the database
-        db.scheduled_messages.delete_one({"chat_id": chat_id, "category": message_category})
-        # Cancel the ongoing task for this chat and category
-        task_key = f"{chat_id}_{message_category}"
-        if task_key in SCHEDULED_MESSAGES_TASK:
-            SCHEDULED_MESSAGES_TASK[task_key].cancel()
-            del SCHEDULED_MESSAGES_TASK[task_key]
-            
-    except Exception as e:
-        logger.error(f"Error sending scheduled message to chat {chat_id}: {e}")
-
-async def scheduled_message_task_runner():
-    while True:
-        if db is not None:
-            now = datetime.now()
-            try:
-                # Find all messages that are due to be sent
-                due_messages = db.scheduled_messages.find({"send_time": {"$lte": now}})
-                for message_doc in due_messages:
-                    chat_id = message_doc["chat_id"]
-                    category = message_doc["category"]
-                    message_text = message_doc["message"]
-                    
-                    # Create a new task for each message to avoid blocking
-                    asyncio.create_task(send_scheduled_message(client, chat_id, message_text, category))
-
-            except Exception as e:
-                logger.error(f"Error in scheduled message task runner: {e}")
-        
-        await asyncio.sleep(60) # Check every minute
 
 # --- Bot Commands Handlers ---
 @client.on_message(filters.command("start"))
@@ -1022,8 +972,8 @@ async def show_settings_main_menu(client, message):
         [InlineKeyboardButton("📋 Warn & Punishment Settings", callback_data="show_warn_punishment_settings")],
         [InlineKeyboardButton("📝 Whitelist List", callback_data="freelist_settings")],
         [InlineKeyboardButton("⏱️ Notification Delete Time", callback_data="show_notification_delete_time_menu")],
+        [InlineKeyboardButton("💌 Scheduled Message Settings", callback_data="show_scheduled_message_settings")], # New Button
         [InlineKeyboardButton("🕹️ Game Settings", callback_data="show_game_settings")],
-        [InlineKeyboardButton("⏱️ Schedule Messages", callback_data="show_schedule_messages_menu")],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
     ])
 
@@ -1120,6 +1070,65 @@ async def show_notification_delete_time_menu(client, message):
     else:
         await message.reply_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
 
+async def show_scheduled_message_settings(client, message):
+    if isinstance(message, CallbackQuery):
+        chat_id = message.message.chat.id
+    else:
+        chat_id = message.chat.id
+        
+    settings = get_reminder_settings(chat_id)
+    reminder_status = "✅ On" if settings.get("enabled", DEFAULT_REMINDER_ENABLED) else "❌ Off"
+    
+    status_text = (
+        "<b>💌 Scheduled Message Settings:</b>\n\n"
+        f"Yahan aap automatic scheduled messages ko manage kar sakte hain.\n\n"
+        f"<b>Current Status:</b> {reminder_status}\n"
+        f"<b>Interval:</b> {settings.get('interval_hours', DEFAULT_REMINDER_INTERVAL_HOURS)} hours"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Scheduled Messages: {reminder_status}", callback_data="toggle_reminders")],
+        [InlineKeyboardButton("Change Interval", callback_data="show_interval_settings")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
+    ])
+    
+    if isinstance(message, CallbackQuery):
+        await message.message.edit_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+    else:
+        await message.reply_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+
+async def show_interval_settings(client, message):
+    if isinstance(message, CallbackQuery):
+        chat_id = message.message.chat.id
+    else:
+        chat_id = message.chat.id
+    
+    settings = get_reminder_settings(chat_id)
+    current_interval = settings.get("interval_hours", DEFAULT_REMINDER_INTERVAL_HOURS)
+    
+    status_text = (
+        "<b>⏱️ Change Message Interval:</b>\n\n"
+        "Kitne ghante baad automatic message bheja jayega?\n\n"
+        f"<b>Current Interval:</b> {current_interval} hours"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"1 Hour {'✅' if current_interval == 1 else ''}", callback_data="set_reminder_interval_1"),
+            InlineKeyboardButton(f"2 Hours {'✅' if current_interval == 2 else ''}", callback_data="set_reminder_interval_2"),
+            InlineKeyboardButton(f"4 Hours {'✅' if current_interval == 4 else ''}", callback_data="set_reminder_interval_4")
+        ],
+        [
+            InlineKeyboardButton(f"6 Hours {'✅' if current_interval == 6 else ''}", callback_data="set_reminder_interval_6"),
+            InlineKeyboardButton(f"12 Hours {'✅' if current_interval == 12 else ''}", callback_data="set_reminder_interval_12")
+        ],
+        [InlineKeyboardButton("⬅️ Back", callback_data="show_scheduled_message_settings")]
+    ])
+    
+    if isinstance(message, CallbackQuery):
+        await message.message.edit_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+    else:
+        await message.reply_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
 
 async def show_game_settings(client, message):
     if isinstance(message, CallbackQuery):
@@ -1139,56 +1148,6 @@ async def show_game_settings(client, message):
         await message.message.edit_text(game_status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
     else:
         await message.reply_text(game_status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-
-
-async def show_schedule_messages_menu(client, message):
-    if isinstance(message, CallbackQuery):
-        chat_id = message.message.chat.id
-    else:
-        chat_id = message.chat.id
-        
-    menu_text = "<b>⏱️ Message Scheduling:</b>\n\n" \
-                "Yahan aap alag-alag tarah ke messages ko group mein automatically bhejne ke liye schedule kar sakte hain."
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💖 Romantic", callback_data="schedule_category_romantic")],
-        [InlineKeyboardButton("🚀 Motivational", callback_data="schedule_category_motivational")],
-        [InlineKeyboardButton("💬 General", callback_data="schedule_category_general")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_settings_main_menu")]
-    ])
-    
-    if isinstance(message, CallbackQuery):
-        await message.message.edit_text(menu_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-    else:
-        await message.reply_text(menu_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-
-async def show_schedule_time_menu(client, message, category):
-    if isinstance(message, CallbackQuery):
-        chat_id = message.message.chat.id
-    else:
-        chat_id = message.chat.id
-    
-    menu_text = f"<b>⏱️ Schedule Time for {category.capitalize()} Messages:</b>\n\n" \
-                "Select the time after which a message from this category will be sent to the group."
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1 Hour", callback_data=f"set_schedule_time_{category}_1"),
-         InlineKeyboardButton("2 Hours", callback_data=f"set_schedule_time_{category}_2"),
-         InlineKeyboardButton("3 Hours", callback_data=f"set_schedule_time_{category}_3")],
-        [InlineKeyboardButton("4 Hours", callback_data=f"set_schedule_time_{category}_4"),
-         InlineKeyboardButton("5 Hours", callback_data=f"set_schedule_time_{category}_5"),
-         InlineKeyboardButton("6 Hours", callback_data=f"set_schedule_time_{category}_6")],
-        [InlineKeyboardButton("7 Hours", callback_data=f"set_schedule_time_{category}_7"),
-         InlineKeyboardButton("8 Hours", callback_data=f"set_schedule_time_{category}_8"),
-         InlineKeyboardButton("9 Hours", callback_data=f"set_schedule_time_{category}_9")],
-        [InlineKeyboardButton("10 Hours", callback_data=f"set_schedule_time_{category}_10")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="show_schedule_messages_menu")]
-    ])
-
-    if isinstance(message, CallbackQuery):
-        await message.message.edit_text(menu_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
-    else:
-        await message.reply_text(menu_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
 
 
 @client.on_message(filters.group & filters.command("free"))
@@ -1440,7 +1399,6 @@ async def clear_temp_data(client: Client, message: Message):
                 db.warn_settings.delete_one({"chat_id": chat_id})
                 db.whitelist.delete_many({"chat_id": chat_id})
                 db.warnings.delete_many({"chat_id": chat_id})
-                db.scheduled_messages.delete_many({"chat_id": chat_id}) # New cleanup
                 
                 inactive_groups += 1
                 
@@ -1711,7 +1669,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_', 'tictac_new_game_starter_','set_notif_time_', 'schedule_', 'set_schedule_time_')) and data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"]:
+        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_', 'tictac_new_game_starter_','set_notif_time_', 'set_reminder_interval_')):
             is_current_group_admin = await is_group_admin(chat_id, user_id)
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
@@ -1839,51 +1797,31 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         await show_notification_delete_time_menu(client, query)
         return
     
-    if data == "show_schedule_messages_menu":
-        await show_schedule_messages_menu(client, query)
+    if data == "show_scheduled_message_settings":
+        await show_scheduled_message_settings(client, query)
         return
-
-    if data.startswith("schedule_category_"):
-        category = data.split('_')[-1]
-        await show_schedule_time_menu(client, query, category)
+    
+    if data == "show_interval_settings":
+        await show_interval_settings(client, query)
         return
-
-    if data.startswith("set_schedule_time_"):
-        parts = data.split('_')
-        category = parts[3]
-        hours = int(parts[4])
-        
-        # Get a random message from the selected category
-        scheduled_message = random.choice(SCHEDULED_MESSAGES_DATA.get(category, []))
-        
-        # Calculate send time
-        send_time = datetime.now() + timedelta(hours=hours)
-
-        # Store in database
-        if db is not None:
-            db.scheduled_messages.update_one(
-                {"chat_id": chat_id, "category": category},
-                {"$set": {"message": scheduled_message, "send_time": send_time}},
-                upsert=True
-            )
-            
-            # Start the countdown and give feedback
-            try:
-                eta = send_time.strftime('%Y-%m-%d %H:%M:%S IST')
-                await query.message.edit_text(
-                    f"✅ <b>Message scheduled!</b>\n\n"
-                    f"Category: <code>{category.capitalize()}</code>\n"
-                    f"Will be sent in: <code>{hours} hours</code>\n"
-                    f"ETA: <code>{eta}</code>"
-                , reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="show_schedule_messages_menu")]])
-                , parse_mode=enums.ParseMode.HTML)
-                logger.info(f"Scheduled message for chat {chat_id}, category {category}, ETA {eta}.")
-            except MessageNotModified:
-                pass
-        else:
-            await query.answer("Database connection error. Cannot schedule message.")
+    
+    if data.startswith("set_reminder_interval_"):
+        try:
+            interval_hours = int(data.split('_')[-1])
+            update_reminder_setting(chat_id, "interval_hours", interval_hours)
+            await show_interval_settings(client, query)
+        except ValueError:
+            await query.answer("Invalid interval selected.")
         return
-
+    
+    if data == "toggle_reminders":
+        settings = get_reminder_settings(chat_id)
+        current_status = settings.get("enabled", DEFAULT_REMINDER_ENABLED)
+        new_status = not current_status
+        update_reminder_setting(chat_id, "enabled", new_status)
+        await show_scheduled_message_settings(client, query)
+        return
+    
     if data.startswith("set_notif_time_"):
         try:
             time_in_minutes = int(data.split('_')[-1])
@@ -2110,8 +2048,8 @@ if __name__ == "__main__":
 
     logger.info("Bot is starting...")
     
-    # Start the scheduled messages task
-    client.loop.create_task(scheduled_message_task_runner())
+    # --- New line added to start the reminder scheduler ---
+    client.loop.create_task(reminder_scheduler(client, db))
 
     client.run()
     logger.info("Bot stopped")
