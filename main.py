@@ -22,9 +22,6 @@ load_dotenv()
 # --- Custom module import (ensure this file exists and is correctly configured)
 from profanity_filter import ProfanityFilter
 
-# --- New import for the reminder feature ---
-from reminder_scheduler import reminder_scheduler
-
 # --- Configuration ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -77,6 +74,84 @@ SECRET_CHATS = {}
 TIC_TAC_TOE_GAMES = {}
 TIC_TAC_TOE_TASK = {}
 
+# --- Scheduled Broadcast State ---
+class ScheduledBroadcast:
+    def __init__(self):
+        self.is_active = False
+        self.interval_minutes = 0
+        self.message = ""
+        self.target = "both"  # "users", "groups", or "both"
+        self.task = None
+
+SCHEDULED_BROADCAST = ScheduledBroadcast()
+
+# Reminder settings
+REMINDER_INTERVAL_HOURS = 2  # Interval for sending reminders (in hours)
+USERS_TO_TAG_COUNT = 5       # Number of online users to tag
+
+# List of engaging messages
+REMINDER_MESSAGES = {
+    "funny": [
+        "𝕊𝕒𝕓 𝕝𝕠𝕘 𝕚𝕥𝕟𝕖 𝕤𝕙𝕒𝕟𝕥 𝕜𝕪𝕦𝕟 𝕙𝕒𝕚𝕟? 𝕂𝕪𝕒 𝕞𝕒𝕚𝕟 𝕒𝕜𝕖𝕝𝕖 𝕓𝕒𝕒𝕥 𝕜𝕒𝕣 𝕣𝕒𝕙𝕒 𝕙𝕠𝕠𝕟? 😅",
+        "𝙆𝙤𝙞 𝙝𝙖𝙞 𝙮𝙖𝙝𝙖𝙣? 𝙖 𝙨𝙖𝙗 𝙏𝙚𝙡𝙚𝙜𝙧𝙖𝙢 𝙗𝙖𝙣𝙙 𝙠𝙖𝙧𝙠𝙚 𝙨𝙤 𝙜𝙖𝙮𝙚 𝙝𝙖𝙞𝙣? 😴",
+        "ꜰɪʀ ꜱᴇ ɢʀᴏᴜᴘ ᴍᴇ ᴄʜᴜᴘ ᴄʜᴀᴀᴘ ᴋᴀʏꜱᴇ ʙᴀᴀᴛ ᴋᴀʀᴇᴇ? 🤫",
+        "𝒜𝒶𝒿 𝓉𝑜 𝒷𝒽𝒶𝑔𝓌𝒶𝓃 𝒿𝒾 𝓃𝑒𝓈𝒽𝒶 𝓁𝒶𝑔𝒶𝓎𝑒 𝒽𝒶𝒾𝓃 𝓀𝓎𝒶? 😵‍💫",
+        "𝐈𝐬 𝐠𝐫𝐨𝐮𝐩 𝐦𝐞 𝐤𝐨𝐢 𝐣𝐢𝐧𝐝𝐚 𝐡𝐚𝐢 𝐲𝐚 𝐬𝐚𝐛 𝐦𝐮𝐦𝐦𝐲 𝐤𝐞 𝐝𝐮𝐝𝐡 𝐩𝐞𝐞𝐤𝐞 𝐬𝐨 𝐠𝐚𝐲𝐞? 🍼",
+        "𝓘𝓽𝓷𝓲 𝓼𝓪𝓷𝓽𝓪 𝓴𝔂𝓸𝓷 𝓱𝓲? 𝓚𝓸𝓲 𝓽𝓸 𝓱𝓪𝓼𝓪𝓸 𝔂𝓪𝓪𝓻! 😆",
+        "𝖄𝖔𝖚 𝖐𝖓𝖔𝖜 𝖜𝖍𝖆𝖙'𝖘 𝖗𝖆𝖗𝖊? 𝕿𝖍𝖎𝖘 𝖌𝖗𝖔𝖚𝖕'𝖘 𝖆𝖈𝖙𝖎𝖛𝖎𝖙𝖞! 🦄",
+        "Ａｒｅ　ｙｏｕ　ｇｕｙｓ　ｄｅａｄ　ｏｒ　ｊｕｓｔ　ｐｌａｙｉｎｇ　ｄｅａｄ？ 💀"
+    ],
+    "romantic": [
+        "𝔄𝔭𝔨𝔢 𝔟𝔦𝔫𝔞 𝔶𝔢𝔥 𝔤𝔯𝔬𝔲𝔭 𝔨𝔦𝔱𝔫𝔞 𝔰𝔬𝔬𝔫𝔞 𝔩𝔞𝔤𝔱𝔞 𝔥𝔞. 𝔎𝔬𝔦 𝔱𝔬 𝔨 𝔯𝔬𝔪𝔞𝔫𝔱𝔦𝔠 𝔪𝔢𝔰𝔰𝔞𝔤𝔢 𝔨𝔞𝔯𝔬! ❤️",
+        "𝙆𝙞𝙨𝙞 𝙠𝙤 𝙥𝙧𝙤𝙥𝙤𝙨𝙚 𝙠𝙖𝙧𝙣𝙚 𝙠𝙖 𝙢𝙤𝙤𝙙 𝙝𝙖𝙞? 𝙔𝙚𝙝 𝙜𝙧𝙤𝙪𝙥 𝙖𝙖𝙥𝙠𝙞 𝙝𝙚𝙡𝙥 𝙠𝙖𝙧 𝙨𝙖𝙠𝙩𝙖 𝙝𝙖𝙞! 💍",
+        "ʏᴏᴜ'ʀᴇ ʟɪᴋᴇ ᴍʏ ᴘʜᴏɴᴇ ʙᴀᴛᴛᴇʀʏ - ʏᴏᴜ ᴄʜᴀʀɢᴇ ᴍʏ ʟɪꜰᴇ! 🔋❤️",
+        "𝒯𝓊𝓂 𝒽𝒶𝓇 𝓌𝒶𝓀𝓉 𝓂𝑒𝓇𝑒 𝒹𝒽𝒶𝒹𝓀𝒶𝓃𝑜 𝓂𝑒 𝒽𝑜. 𝒮𝒶𝓂𝒿𝒽𝑒? 💓",
+        "𝐘𝐨𝐮 + 𝐌𝐞 = 𝐅𝐨𝐫𝐞𝐯𝐞𝐫 ❤️ 𝐀𝐠𝐫𝐞𝐞? 😘",
+        "𝓘 𝔀𝓪𝓷𝓽 𝓽𝓸 𝓫𝓮 𝔂𝓸𝓾𝓻 𝓯𝓪𝓿𝓸𝓻𝓲𝓽𝓮 𝓱𝓪𝓫𝓲... 𝓐𝓷𝓭 𝓽𝓱𝓷 𝓘 𝔀𝓪𝓷𝓽 𝓽𝓸 𝓻𝓾𝓲𝓷 𝓲𝓽. 😈",
+        "𝖂𝖍𝖞 𝖉𝖔 𝖈𝖔𝖒𝖕𝖚𝖙𝖊𝖗𝖘 𝖘𝖚𝖈𝖐 𝖆𝖙 𝖋𝖑𝖎𝖗𝖙𝖎𝖓𝖌? 𝕭𝖊𝖈𝖆𝖚𝖘𝖊 𝖙𝖍𝖊𝖞 𝖍𝖆𝖛𝖊 𝖓𝖔 𝖍𝖆𝖗𝖉 𝖉𝖗𝖎𝖛𝖊! 😉",
+        "Ａｒｅ　ｙｏｕ　ａ　ｍａｇｎｅｔ？ 🧲 Ｂｅｃａｕｓｅ　Ｉ'ｍ　ａｔｔｒａｃｔｅｄ　ｔｏ　ｙｏｕ！ 💫"
+    ],
+    "commands": [
+        "ℕ𝕒𝕪𝕖 𝕦𝕤𝕖𝕣𝕤 𝕜𝕖 𝕝𝕚𝕖: 𝕓𝕠𝕥 𝕜𝕚 𝕔𝕠𝕞𝕞𝕒𝕟𝕕𝕤 𝕛𝕒𝕟𝕟𝕖 𝕜𝕖 𝕝𝕚𝕪𝕖 `/help` 𝕥𝕪𝕡𝕖 𝕜𝕒𝕣𝕖𝕚𝕟. 🤖",
+        "𝘽𝙤𝙧𝙚𝙙 𝙝𝙤 𝙧𝙖𝙝𝙚 𝙝𝙤? 𝘾𝙝𝙖𝙡𝙤, 𝙜𝙖𝙢𝙚 𝙠𝙝𝙚𝙡𝙩𝙚 h𝙖𝙞𝙣! `/tictac` 𝙘𝙤𝙢𝙢𝙖𝙣𝙙 𝙨𝙚 𝙨𝙝𝙪𝙧𝙪 𝙠𝙖𝙧𝙤. 🎮",
+        "ɴᴇᴡ ᴜᴘᴅᴀᴛᴇꜱ! ᴛʏᴘᴇ `/update` ꜰᴏʀ ʟᴀᴛᴇꜱᴛ ꜰᴇᴀᴛᴜʀᴇꜱ. 🆕",
+        "𝒜𝒶𝓅 𝒷𝑜𝓉 𝓈𝑒 𝓅𝓇𝑜𝓂𝑜𝓉𝑒 𝒽𝑜𝓈𝒶𝓀𝓉𝑒 𝒽𝒶𝒾𝓃? 𝒯𝓎𝓅𝑒 `/promote` ⬆️",
+        "𝐖𝐚𝐧𝐭 𝐭𝐨 𝐬𝐞𝐞 𝐜𝐨𝐨𝐥 𝐬𝐭𝐢𝐜𝐤𝐞𝐫𝐬? 𝐓𝐲𝐩𝐞 `/sticker` 🎭",
+        "𝓘𝓼 𝓼𝓾𝓼𝓲𝓬 𝓽𝓱𝓮 𝓯𝓸𝓸𝓭 𝓸𝓯 𝓵𝓸𝓿𝓮? 𝓟𝓵𝓪𝔂 𝓼𝓸𝓶𝓮 𝔀𝓲𝓱 `/play` 🎵",
+        "𝕿𝖞𝖕𝖊 `/joke` 𝖋𝖔𝖗 𝖆 𝖉𝖆𝖎𝖑𝖞 𝖉𝖔𝖘𝖊 𝖔𝖋 𝖑𝖆𝖚𝖌𝖍𝖙𝖊𝖗! 🤣",
+        "Ｔｙｐｅ　`/quote`　ｆｆｆｆｆｆ　ａ　ｄａｉｌｙ　ｍｏｔｉｖａｔｉｏｎａｌ　ｑｕｏｔｅ！ 💪"
+    ],
+    "general": [
+        "𝔄𝔧 𝔨𝔞 𝔡𝔦𝔫 𝔨𝔞𝔦𝔰𝔞 𝔯𝔞𝔥𝔞 𝔰𝔞𝔟𝔨𝔞? 𝔎𝔬𝔦 𝔦𝔫𝔱𝔯𝔢𝔰𝔱𝔦𝔫𝔤 𝔰𝔱𝔬𝔯𝔶 𝔥𝔞𝔦? 📖",
+        "𝘼𝙥𝙣𝙚 𝙛𝙖𝙫𝙤𝙧𝙞𝙩𝙚 𝙤𝙚𝙢/𝙨𝙝𝙖𝙮𝙖𝙧𝙞 𝙖𝙧𝙝𝙤 𝙖𝙨𝙖𝙣𝙙 𝙠𝙖𝙧𝙣𝙚 𝙬𝙖𝙡𝙤𝙣 𝙠𝙚 𝙡𝙞𝙮𝙚. ✍️",
+        "ᴡʜᴀᴛ'ꜱ ʏᴏᴜʀ ꜰᴀᴠᴏʀɪᴛᴇ ᴍᴏᴍᴇɴᴛ ꜰʀᴏᴍ ᴛʜɪꜱ ᴡᴇᴇᴋ? 🗓️",
+        "𝒯𝑒𝓁𝓁 𝓊𝓈 𝓈𝑜𝓂𝑒𝓉𝒽𝒾𝓃𝑔 𝒶𝒷𝑜𝓊𝓉 𝓎𝑜𝓊𝓇𝓈𝑒𝓁𝒻 𝓌𝑒 𝒹𝑜𝓃'𝓉 𝓀𝓃𝑜𝓌! 🤫",
+        "𝐖𝐡𝐚𝐭's 𝐭𝐡𝐞 𝐦𝐨𝐬𝐭 𝐚𝐝𝐯𝐞𝐧𝐭𝐮𝐫𝐨𝐮𝐬 𝐭𝐡𝐢𝐧𝐠 𝐲𝐨𝐮'𝐯𝐞 𝐞𝐯𝐞𝐫 𝐝𝐨𝐧𝐞? 🚀",
+        "𝓗𝓸𝔀 𝔀𝓼 𝔂𝓸𝓾𝓻 𝓭𝓪𝔂? 𝓢𝓱𝓪𝓻𝓮 𝔂𝓸𝓾𝓻 𝓱𝓲𝓰𝓱𝓼 𝓪𝓷𝓭 𝓵𝓸𝔀𝐬! ☀️🌧️",
+        "𝕯𝖔 𝖞𝖔𝖚 𝖍𝖆𝖛𝖊 𝖆 𝖉𝖆𝖎𝖑𝖞 𝖗𝖔𝖚𝖙𝖎𝖓𝖊? 𝕾𝖍𝖆𝖗𝖊 𝖎𝖙 𝖜𝖎𝖙𝖍 𝖘! ⏰",
+        "Ｗｈｙｔ　ｄｏ　ｙｏｕ　ｄｏ　ｗｈｅｎ　ｙｏｕ　ｆｅｅｌ　ｂｏｒｅｄ？　Ｔｅｌｌ　ｕｓ　ｙｏｕｒ　ｗａｙｓ！ 🎨"
+    ],
+    "motivational": [
+        "𝕋𝕠𝕕𝕒𝕪 𝕚𝕤 𝕒 𝕘𝕣𝕖𝕒𝕥 𝕕𝕒𝕪 𝕥𝕠 𝕓𝕠 𝕤𝕠𝕞𝕖𝕥𝕙𝕚𝕟𝕘 𝕒𝕞𝕒𝕫𝕚𝕟𝕘! ✨",
+        "𝘿𝙤𝙣'𝙩 𝙨𝙩𝙤𝙥 𝙬𝙝𝙚𝙣 𝙮𝙤𝙪'𝙧𝙚 𝙩𝙞𝙧𝙚𝙙. 𝙎𝙩𝙤𝙥 𝙬𝙝𝙚𝙣 𝙮𝙤𝙪'𝙧𝙚 𝙙𝙤𝙣𝙚. 💪",
+        "ʏᴏᴜʀ ᴏɴʟʏ ʟɪᴍɪᴛ ɪs ʏᴏᴜʀꜱᴇʟꜰ - ʙʀᴇᴀᴋ ꜰʀᴇᴇ! 🦅",
+        "𝒯𝒽𝑒 𝒷𝑒𝓈𝓉 𝓌𝒶𝓎 𝓉𝑜 𝓅𝓇𝑒𝒹𝒾𝒸𝓉 𝓉𝒽𝑒 𝒻𝓊𝓊𝓇𝑒 𝒾𝓈 𝓉𝑜 𝒸𝓇𝑒𝒶𝓉𝑒 𝒾𝓉. 🚀",
+        "𝐒𝐮𝐜𝐜𝐞𝐬𝐬 𝐢𝐬 𝐧𝐨𝐭 𝐟𝐢𝐧𝐚𝐥, 𝐟𝐚𝐢𝐥𝐮𝐫𝐞 𝐢𝐬 𝐧𝐨𝐭 𝐟𝐚𝐭𝐚𝐥: 𝐈𝐭 𝐢𝐬 𝐭𝐡𝐞 𝐜𝐨𝐮𝐫𝐚𝐠𝐞 𝐭𝐨 𝐜𝐨𝐧𝐭𝐢𝐧𝐮𝐞 𝐭𝐡𝐚𝐭 𝐜𝐨𝐮𝐧𝐭𝐬. 🏆",
+        "𝓣𝓱𝓮 𝓸𝓷𝔂 𝓹𝓮𝓻𝓼𝓸𝓷 𝔂𝓸𝓾 𝓼𝓱𝓸𝓾𝓵𝓭 𝓽𝔂 𝓽𝓸 𝓫𝓮 𝓫𝓮𝓽𝓮 𝓽𝓱𝓪𝓷 𝓲𝓼 𝓽𝓱𝓮 𝓹𝓮𝓼𝓷 𝔂𝓸𝓾 𝔀𝓮𝓻𝓮 𝔂𝓮𝓼𝓽𝓮𝓻𝓭𝓪𝔂. 🌟",
+        "𝖄𝖔𝖚 𝖆𝖗𝖊 𝖈𝖆𝖕𝖆𝖇𝖑𝖊 𝖔𝖋 𝖆𝖒𝖆𝖟𝖎𝖓𝖌 𝖙𝖍𝖎𝖓𝖌𝖘! 𝕭𝖊𝖑𝖎𝖊𝖛𝖊 𝖎𝖓 𝖞𝖔𝖚𝖗𝖘𝖊𝖑𝖋. 💫",
+        "Ｄｏｎ'ｔ　ｗａｉｔ　ｆｆｆｆｆ　ｔｈｅ　ｐｅｒｆｅｃｔ　ｍｏｍｅｎｔ．　Ｔａｋｅ　ｔｈｅ　ｍｏｍｅｎｔ　ａｎｄ　ｍａｋｅ　ｉｔ　ｐｅｒｆｅｃｔ． 🌈"
+    ],
+    "group": [
+        "𝔊𝔯𝔬𝔲𝔭 𝔪𝔢𝔪𝔟𝔢𝔯𝔰, 𝔞𝔞𝔧 𝔨𝔦 𝔪𝔢𝔢𝔱𝔦𝔫𝔤 𝔰𝔥𝔲𝔯𝔲 𝔨𝔞𝔯𝔱𝔢 𝔥𝔞𝔦𝔫! 🎤",
+        "𝙃𝙚𝙮 𝙚𝙤𝙥𝙡𝙚! 𝙇𝙚𝙩's 𝙢𝙖𝙠𝙚 𝙩𝙝𝙞𝙨 𝙜𝙧𝙤𝙪𝙥 𝙢𝙤𝙧𝙚 𝙖𝙘𝙩𝙞𝙫𝙚. 𝙒𝙝𝙤'𝙨 𝙞𝙣? 💬",
+        "ɢʀᴏᴜᴘ ɢᴏᴀʟ: 100+ ᴍᴇꜱꜱᴀɢᴇꜱ ᴛᴏᴅᴀʏ! ᴄᴀɴ ᴡᴇ ᴅᴏ ɪᴛ? 💯",
+        "𝒢𝓇𝑜𝓊𝓅 𝓇𝓊𝓁𝑒𝓈 𝓇𝑒𝓂𝒾𝓃𝒹𝑒𝓇: 𝐵𝑒 𝓀𝒾𝓃𝒹, 𝒷𝑒 𝒶𝒸𝓉𝒾𝓋𝑒, 𝒶𝓃𝒹 𝒽𝒶𝓋𝓥𝑒 𝒻𝓊𝓃! 🤝",
+        "𝐋𝐞𝐭'𝐬 𝐰𝐞𝐥𝐜𝐨𝐦𝐞 𝐨𝐮𝐫 𝐧𝐞𝐰 𝐦𝐞𝐦𝐛𝐞𝐫𝐬! 𝐒𝐚𝐲 𝐡𝐢! 👋",
+        "𝓦𝓱𝓪𝓽'𝓼 𝔂𝓸 𝓯𝓯𝓯𝓯𝓯 𝓽 𝓭𝓲𝓼𝓬𝓾𝓼𝓼 𝓽𝓸𝓭𝓪𝓽? 𝓛𝓮𝓽'𝓼 𝓫𝓻𝓪𝓲𝓷𝓼𝓽𝓸𝓻𝓶! 💡",
+        "𝕿𝖍𝖎𝖘 𝖌𝖗𝖔𝖚𝖕 𝖎𝖘 𝖆𝖇𝖔𝖚𝖙 𝖙𝖔 𝖍𝖎𝖙 500+ 𝖒𝖊𝖒𝖇𝖊𝖗𝖘! 𝖀𝖘𝖊 `/invite` 𝖙𝖔 𝖇𝖗𝖎𝖓𝖌 𝖋𝖗𝖎𝖊𝖓𝖉𝖘. 🚀",
+        "Ｌｅｔ'ｓ　ｐｌａｙ　ａ　ｇａｍｅ！　Ｔｙｐｅ　`/game`　ｔｏ　ｓｅｅ　ｏｕｒ　ｇｒｏｕｐ　ｇａｍｅｓ． 🎲"
+    ]
+}
 
 # --- MongoDB Initialization ---
 def init_mongodb():
@@ -395,7 +470,6 @@ async def start(client: Client, message: Message) -> None:
         except Exception as e:
             logger.error(f"Error handling start in group: {e}")
 
-
 @client.on_message(filters.command("help"))
 async def help_handler(client: Client, message: Message):
     chat_id = message.chat.id
@@ -414,6 +488,7 @@ async def help_handler(client: Client, message: Message):
         "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
         "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
         "• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+        "• <code>/schedulesend</code>: Scheduled message bhejne ke liye (sirf bot admins ke liye).\n"
         "• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
         "• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
         "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
@@ -935,19 +1010,24 @@ async def show_settings_main_menu(client, message):
     settings_text = "⚙️ <b>Bot Settings Menu:</b>\n\n" \
                     "Yahan aap group moderation features ko configure kar sakte hain."
                     
-    keyboard = InlineKeyboardMarkup([
+    keyboard = [
         [InlineKeyboardButton("✅ On/Off Settings", callback_data="show_onoff_settings")],
         [InlineKeyboardButton("📋 Warn & Punishment Settings", callback_data="show_warn_punishment_settings")],
         [InlineKeyboardButton("📝 Whitelist List", callback_data="freelist_settings")],
         [InlineKeyboardButton("⏱️ Notification Delete Time", callback_data="show_notification_delete_time_menu")],
         [InlineKeyboardButton("🕹️ Game Settings", callback_data="show_game_settings")],
         [InlineKeyboardButton("🗑️ Close", callback_data="close")]
-    ])
+    ]
+    
+    if is_admin(user_id):
+        keyboard.insert(1, [InlineKeyboardButton("📢 Scheduled Message", callback_data="show_scheduled_menu")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     if isinstance(message, CallbackQuery):
-        await message.message.edit_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        await message.message.edit_text(settings_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
     else:
-        await message.reply_text(settings_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        await message.reply_text(settings_text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
 
 
 async def show_on_off_settings(client, message):
@@ -1056,6 +1136,145 @@ async def show_game_settings(client, message):
         await message.message.edit_text(game_status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
     else:
         await message.reply_text(game_status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+
+# --- New Scheduled Message Logic ---
+async def start_scheduled_broadcast_task():
+    """Starts the scheduled broadcast task."""
+    if SCHEDULED_BROADCAST.task and not SCHEDULED_BROADCAST.task.done():
+        SCHEDULED_BROADCAST.task.cancel()
+    
+    async def broadcast_loop():
+        while True:
+            await asyncio.sleep(SCHEDULED_BROADCAST.interval_minutes * 60)
+            if SCHEDULED_BROADCAST.is_active:
+                await send_scheduled_broadcast(client)
+    
+    SCHEDULED_BROADCAST.task = asyncio.create_task(broadcast_loop())
+    logger.info("Scheduled broadcast task started.")
+
+async def stop_scheduled_broadcast_task():
+    """Stops the scheduled broadcast task."""
+    if SCHEDULED_BROADCAST.task and not SCHEDULED_BROADCAST.task.done():
+        SCHEDULED_BROADCAST.task.cancel()
+        SCHEDULED_BROADCAST.task = None
+        logger.info("Scheduled broadcast task stopped.")
+        
+async def send_scheduled_broadcast(client: Client):
+    """Sends the scheduled broadcast message to the selected targets."""
+    if db is None or not SCHEDULED_BROADCAST.is_active:
+        return
+
+    success_count = 0
+    fail_count = 0
+
+    message_content = SCHEDULED_BROADCAST.message
+
+    if SCHEDULED_BROADCAST.target in ["users", "both"]:
+        try:
+            users = db.users.find({}, {"user_id": 1})
+            for user_doc in users:
+                try:
+                    await client.send_message(user_doc["user_id"], message_content, parse_mode=enums.ParseMode.HTML)
+                    success_count += 1
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"Failed to send scheduled message to user {user_doc['user_id']}: {e}")
+                    fail_count += 1
+        except Exception as e:
+            logger.error(f"Error fetching users for scheduled broadcast: {e}")
+
+    if SCHEDULED_BROADCAST.target in ["groups", "both"]:
+        try:
+            groups = db.groups.find({}, {"chat_id": 1})
+            for group_doc in groups:
+                try:
+                    await client.send_message(group_doc["chat_id"], message_content, parse_mode=enums.ParseMode.HTML)
+                    success_count += 1
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"Failed to send scheduled message to group {group_doc['chat_id']}: {e}")
+                    fail_count += 1
+        except Exception as e:
+            logger.error(f"Error fetching groups for scheduled broadcast: {e}")
+    
+    logger.info(f"Scheduled broadcast sent. Success: {success_count}, Fail: {fail_count}")
+
+# State management for scheduled send command
+SCHEDULED_SEND_STATE = {}
+
+@client.on_message(filters.command("schedulesend") & filters.private)
+async def schedule_send_command(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        await message.reply_text("Aapke paas is command ko use karne ki permission nahi hai.")
+        return
+        
+    user_id = message.from_user.id
+    SCHEDULED_SEND_STATE[user_id] = {"step": 1}
+    
+    await message.reply_text(
+        "<b>📢 Scheduled Broadcast Setup: Step 1/3</b>\n\n"
+        "Kripya woh message bhejein jo aap schedule karna chahte hain.",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
+async def handle_setup_steps(client: Client, message: Message):
+    user_id = message.from_user.id
+    state = SCHEDULED_SEND_STATE.get(user_id)
+    
+    if not state:
+        return
+        
+    if state["step"] == 1:
+        SCHEDULED_SEND_STATE[user_id]["message"] = message.text
+        SCHEDULED_SEND_STATE[user_id]["step"] = 2
+        await message.reply_text(
+            "<b>📢 Scheduled Broadcast Setup: Step 2/3</b>\n\n"
+            "Ab, kripya time interval (ghanton mein) batayein, jab bot message bhejega. Ek number daalein (jaise '2' har 2 ghante ke liye).",
+            parse_mode=enums.ParseMode.HTML
+        )
+        
+    elif state["step"] == 2:
+        try:
+            interval = int(message.text)
+            if interval <= 0:
+                raise ValueError
+            SCHEDULED_SEND_STATE[user_id]["interval"] = interval
+            SCHEDULED_SEND_STATE[user_id]["step"] = 3
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Users Only", callback_data="set_target_users")],
+                [InlineKeyboardButton("Groups Only", callback_data="set_target_groups")],
+                [InlineKeyboardButton("Both", callback_data="set_target_both")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_scheduled_send")]
+            ])
+            
+            await message.reply_text(
+                "<b>📢 Scheduled Broadcast Setup: Step 3/3</b>\n\n"
+                "Aap yeh message kinhein bhejna chahte hain?",
+                reply_markup=keyboard,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except ValueError:
+            await message.reply_text("Invalid input. Kripya ek poora number (integer) daalein.")
+    
+    elif message.text and BROADCAST_MESSAGE.get(user_id) == "waiting_for_message":
+        # This handles the regular broadcast command's second step
+        BROADCAST_MESSAGE[user_id] = message
+        keyboard = [
+            [InlineKeyboardButton("✅ Yes, Broadcast Now", callback_data="confirm_broadcast")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await message.reply_text(
+                "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Error sending broadcast confirmation message to {user_id}: {e}")
+            await message.reply_text("Broadcast confirmation message bhejne mein error aaya.")
+            BROADCAST_MESSAGE.pop(user_id, None)
 
 
 @client.on_message(filters.group & filters.command("free"))
@@ -1196,31 +1415,6 @@ async def broadcast_command(client: Client, message: Message) -> None:
     BROADCAST_MESSAGE[message.from_user.id] = "waiting_for_message"
     logger.info(f"Admin {message.from_user.id} initiated broadcast.")
 
-@client.on_message(filters.private & filters.user(ADMIN_USER_IDS) & ~filters.command([]))
-async def handle_broadcast_message(client: Client, message: Message) -> None:
-    user = message.from_user
-
-    if BROADCAST_MESSAGE.get(user.id) != "waiting_for_message":
-        return
-
-    BROADCAST_MESSAGE[user.id] = message
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Yes, Broadcast Now", callback_data="confirm_broadcast")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    try:
-        await message.reply_text(
-            "Kya aap is message ko sabhi groups aur users ko bhejna chahte hain?",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logger.error(f"Error sending broadcast confirmation message to {user.id}: {e}")
-        await message.reply_text("Broadcast confirmation message bhejne mein error aaya.")
-        BROADCAST_MESSAGE.pop(user.id, None)
-
 @client.on_message(filters.command("addabuse") & filters.user(ADMIN_USER_IDS))
 async def add_abuse_word(client: Client, message: Message) -> None:
     if not is_admin(message.from_user.id):
@@ -1239,14 +1433,13 @@ async def add_abuse_word(client: Client, message: Message) -> None:
                 await message.reply_text(f"✅ Shabd <code>{word_to_add}</code> safaltapoorvak jod diya gaya hai.", parse_mode=enums.ParseMode.HTML)
                 logger.info(f"Admin {message.from_user.id} added abuse word: {word_to_add}.")
             else:
-                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se hi list mein maujood hai.", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(f"Shabd <code>{word_to_add}</code> pehle se ही list mein maujood hai.", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
             await message.reply_text(f"Shabd jodte samay error hui: {e}")
             logger.error(f"Error adding abuse word {word_to_add}: {e}")
     else:
         await message.reply_text("Profanity filter initialize nahi hua hai. MongoDB connection mein problem ho sakti hai.")
         logger.error("Profanity filter not initialized, cannot add abuse word.")
-
 
 # --- NEW COMMAND ---
 @client.on_message(filters.command("cleartempdata") & filters.user(ADMIN_USER_IDS))
@@ -1569,6 +1762,56 @@ async def broadcast_to_all(client: Client, message: Message):
     BROADCAST_MESSAGE.pop(message.from_user.id, None)
 
 
+# --- Reminder Scheduler Functions ---
+def get_random_message():
+    """Fetches a random message from the dictionary."""
+    message_type = random.choice(list(REMINDER_MESSAGES.keys()))
+    return random.choice(REMINDER_MESSAGES[message_type])
+
+async def send_random_reminder(client: Client, db: MongoClient):
+    """Sends a random reminder to all active groups."""
+    if db is None:
+        logger.warning("MongoDB not connected. Cannot send reminders.")
+        return
+
+    try:
+        active_groups = [doc['chat_id'] for doc in db.groups.find({})]
+    except Exception as e:
+        logger.error(f"Error fetching active groups from DB: {e}")
+        return
+
+    for chat_id in active_groups:
+        try:
+            bot_member = await client.get_chat_member(chat_id, client.me.id)
+            if bot_member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                online_members = []
+                async for member in client.get_chat_members(chat_id):
+                    if not member.user.is_bot:
+                        online_members.append(member.user)
+                
+                random.shuffle(online_members)
+                members_to_tag = online_members[:USERS_TO_TAG_COUNT]
+                
+                mentions = " ".join([f"<a href='tg://user?id={user.id}'>{user.first_name}</a>" for user in members_to_tag])
+                
+                random_message = get_random_message()
+                final_message = f"{mentions}\n\n{random_message}" if mentions else random_message
+                
+                await client.send_message(chat_id, final_message, parse_mode=enums.ParseMode.HTML)
+                logger.info(f"Sent reminder to group {chat_id}")
+                
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"Error sending random reminder to chat {chat_id}: {e}")
+
+async def reminder_scheduler(client: Client, db: MongoClient):
+    """Schedules the reminder to run at a fixed interval."""
+    while True:
+        await asyncio.sleep(REMINDER_INTERVAL_HOURS * 3600)
+        logger.info("Reminder scheduler started...")
+        await send_random_reminder(client, db)
+
+
 # --- Callback Query Handlers ---
 @client.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery) -> None:
@@ -1582,6 +1825,9 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             if not is_current_group_admin:
                 return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
     else:
+        # For private chat callbacks, only check bot admin for specific actions
+        if data.startswith(('show_scheduled_', 'toggle_scheduled_')) and not is_admin(user_id):
+            return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai.", show_alert=True)
         await query.answer()
 
     if data == "close":
@@ -1621,6 +1867,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             "• <code>/settings</code>: Bot ki settings kholen (Group Admins only).\n"
             "• <code>/stats</code>: Bot usage stats dekhein (sirf bot admins ke liye).\n"
             "• <code>/broadcast</code>: Sabhi groups mein message bhejein (sirf bot admins ke liye).\n"
+            "• <code>/schedulesend</code>: Scheduled message bhejne ke liye (sirf bot admins ke liye).\n"
             "• <code>/addabuse &lt;shabd&gt;</code>: Custom gaali wala shabd filter mein add karein (sirf bot admins ke liye).\n"
             "• <code>/checkperms</code>: Group mein bot ki permissions jaanchein (sirf group admins ke liye).\n"
             "• <code>/cleartempdata</code>: Bot ka temporary aur bekar data saaf karein (sirf bot admins ke liye).\n\n"
@@ -1704,7 +1951,27 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     if data == "show_notification_delete_time_menu":
         await show_notification_delete_time_menu(client, query)
         return
-    
+
+    if data == "show_scheduled_menu":
+        status = "✅ On" if SCHEDULED_BROADCAST.is_active else "❌ Off"
+        target_map = {"users": "Users Only", "groups": "Groups Only", "both": "Both"}
+        
+        status_text = (
+            f"<b>📢 Scheduled Broadcast:</b>\n\n"
+            f"<b>Status:</b> {status}\n"
+            f"<b>Interval:</b> {SCHEDULED_BROADCAST.interval_minutes} hours\n"
+            f"<b>Target:</b> {target_map.get(SCHEDULED_BROADCAST.target, 'N/A')}\n"
+        )
+        
+        toggle_button_text = "Turn Off" if SCHEDULED_BROADCAST.is_active else "Turn On"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🔁 {toggle_button_text}", callback_data="toggle_scheduled_broadcast")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="show_settings_main_menu")]
+        ])
+        
+        await query.message.edit_text(status_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
+        return
+        
     if data.startswith("set_notif_time_"):
         try:
             time_in_minutes = int(data.split('_')[-1])
@@ -1714,6 +1981,47 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
             await query.answer("Invalid time selected.")
         return
         
+    if data.startswith("set_target_"):
+        user_id = query.from_user.id
+        if user_id not in SCHEDULED_SEND_STATE or SCHEDULED_SEND_STATE[user_id].get("step") != 3:
+            await query.answer("❌ Invalid state. Please restart with /schedulesend.", show_alert=True)
+            return
+
+        target = data.split('_')[2]
+        message_to_send = SCHEDULED_SEND_STATE[user_id]["message"]
+        interval = SCHEDULED_SEND_STATE[user_id]["interval"]
+
+        SCHEDULED_BROADCAST.is_active = True
+        SCHEDULED_BROADCAST.message = message_to_send
+        SCHEDULED_BROADCAST.interval_minutes = interval
+        SCHEDULED_BROADCAST.target = target
+        
+        await start_scheduled_broadcast_task()
+        SCHEDULED_SEND_STATE.pop(user_id)
+        
+        await query.message.edit_text(
+            f"✅ Scheduled message successfully set!\n\n"
+            f"<b>Interval:</b> {interval} hours\n"
+            f"<b>Target:</b> {target}\n\n"
+            f"You can manage this from the settings menu.",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Settings", callback_data="show_settings_main_menu")]])
+        )
+        return
+        
+    if data == "toggle_scheduled_broadcast":
+        SCHEDULED_BROADCAST.is_active = not SCHEDULED_BROADCAST.is_active
+        if SCHEDULED_BROADCAST.is_active:
+            if SCHEDULED_BROADCAST.task is None:
+                await start_scheduled_broadcast_task()
+            await query.answer("Scheduled message turned on.", show_alert=True)
+        else:
+            await stop_scheduled_broadcast_task()
+            await query.answer("Scheduled message turned off.", show_alert=True)
+        
+        await show_scheduled_menu(client, query)
+        return
+
     if data == "freelist_settings":
         await command_freelist_callback(client, query)
         return
@@ -1931,7 +2239,7 @@ if __name__ == "__main__":
 
     logger.info("Bot is starting...")
     
-    # --- New line added to start the reminder scheduler ---
+    # Start the reminder scheduler
     client.loop.create_task(reminder_scheduler(client, db))
 
     client.run()
