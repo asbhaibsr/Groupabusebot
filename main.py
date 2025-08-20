@@ -950,6 +950,7 @@ async def tictac_new_game_starter(client: Client, query: CallbackQuery):
 async def settings_command_handler(client: Client, message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
+    # FIX: Check if the user is a group admin before showing settings
     if not await is_group_admin(chat_id, user_id):
         await message.reply_text("Aap group admin nahi hain, is command ka upyog nahi kar sakte.")
         return
@@ -963,6 +964,12 @@ async def show_settings_main_menu(client, message):
     else:
         chat_id = message.chat.id
         user_id = message.from_user.id
+    
+    # FIX: Re-check permissions for callback queries
+    if not await is_group_admin(chat_id, user_id):
+        if isinstance(message, CallbackQuery):
+            await message.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
+        return
     
     settings_text = "⚙️ <b>Bot Settings Menu:</b>\n\n" \
                     "Yahan aap group moderation features ko configure kar sakte hain."
@@ -1439,13 +1446,14 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                 try:
                     db.groups.update_one(
                         {"chat_id": chat.id},
-                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now()}},
+                        {"$set": {"title": chat.title, "type": chat.type.value, "last_active": datetime.now(), "last_reminder": datetime.now()}},
                         upsert=True
                     )
                 except Exception as e:
                     logger.error(f"Error saving group {chat.id} to DB: {e}")
             
             try:
+                # FIX: New join message logic
                 if await is_group_admin(chat.id, bot_info.id):
                     welcome_text = (
                         f"Hello! Main <b>{bot_info.first_name}</b> hun, aur ab main is group mein moderation karunga.\n"
@@ -1458,9 +1466,14 @@ async def welcome_new_member(client: Client, message: Message) -> None:
                     await message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML)
                     logger.info(f"Bot confirmed admin status in {chat.title} ({chat.id}).")
                 else:
-                    await message.reply_text(
-                        f"Hello! Main <b>{bot_info.first_name}</b> hun. Is group mein moderation ke liye, kripya mujhe <b>admin</b> banayein aur <b>'Delete Messages'</b>, <b>'Restrict Users'</b>, <b>'Post Messages'</b> ki permissions dein."
-                        , parse_mode=enums.ParseMode.HTML)
+                    # FIX: New non-admin join message with warning
+                    welcome_text = (
+                        "<b>👋 Main ek naya moderation bot hoon.</b>\n\n"
+                        "<b>⚠️ Important!</b> Kripya mujhe turant admin banayein. Agar aap aisa nahi karte hain, toh main sabhi bio links, edited messages aur abusive messages ko khud hi delete kar dunga. "
+                        "Admin banne se main aapke group ko sahi se manage kar paunga aur bina wajah ke messages delete nahi honge.\n"
+                        "Mujhe admin banane ke liye, group settings mein jaakar mujhe <b>'Delete Messages'</b>, <b>'Restrict Users'</b> aur <b>'Post Messages'</b> ki permissions dein."
+                    )
+                    await message.reply_text(welcome_text, parse_mode=enums.ParseMode.HTML)
                     logger.warning(f"Bot is not admin in {chat.title} ({chat.id}). Functionality will be limited.")
             except Exception as e:
                 logger.error(f"Error during bot's self-introduction in {chat.title} ({chat.id}): {e}")
@@ -1669,13 +1682,12 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     
     if query.message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('show_', 'toggle_', 'config_', 'setwarn_', 'tictac_', 'show_lock_', 'show_secret_', 'freelist_settings', 'toggle_punishment_', 'freelist_show', 'whitelist_', 'unwhitelist_', 'tictac_new_game_starter_','set_notif_time_', 'set_reminder_interval_')):
-            is_current_group_admin = await is_group_admin(chat_id, user_id)
-            if not is_current_group_admin:
-                return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
-    else:
-        await query.answer()
-
+        # This check applies to all settings-related callbacks
+        is_current_group_admin = await is_group_admin(chat_id, user_id)
+        if not is_current_group_admin and data not in ["close", "help_menu", "other_bots", "donate_info", "back_to_main_menu"] and not data.startswith(('tictac_', 'show_lock_', 'show_secret_', 'tictac_new_game_starter_')):
+            return await query.answer("❌ Aapke paas is action ko karne ki permission nahi hai. Aap group admin nahi hain.", show_alert=True)
+    
+    # Handle general callbacks without admin check
     if data == "close":
         try:
             await query.message.delete()
@@ -1777,6 +1789,7 @@ async def callback_handler(client: Client, query: CallbackQuery) -> None:
         )
         return
 
+    # Callbacks that require group admin permissions
     if data == "show_settings_main_menu":
         await show_settings_main_menu(client, query)
         return
